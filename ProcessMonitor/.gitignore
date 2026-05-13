@@ -1,9 +1,15 @@
 # Generated data files
 threshold_history.json
+process_threshold_histories.json
 git_repositories.json
 system_health_*.json
 test*.json
 test*.csv
+process_incidents.ndjson
+process_fingerprints.json
+pattern_definitions.json
+process_knowledge.json
+process_history.json
 
 # IDE files
 .vs/

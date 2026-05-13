@@ -41,6 +41,9 @@ class Program
         var externalToolsConfig = new ExternalToolsConfig();
         configuration.GetSection("ExternalTools").Bind(externalToolsConfig);
 
+        var investigationConfig = new InvestigationConfig();
+        configuration.GetSection("Investigation").Bind(investigationConfig);
+
         // Inizializza servizi
         var commandAnalyzer = new CommandAnalyzer(monitorConfig);
         var performanceCollector = new PerformanceCollector(monitorConfig);
@@ -61,8 +64,12 @@ class Program
         var processTreeResolver = new ProcessTreeResolver(processSnapshotService, ownerResolver, tagEnricher);
         var processSnapshotArchive = new ProcessSnapshotArchiveService(processSnapshotService, ownerResolver, tagEnricher, systemHealthService);
         var remediationPlanner = new RemediationPlanner();
+        var powerShellInvestigation = new PowerShellInvestigationService(loggerFactory.CreateLogger<PowerShellInvestigationService>());
+        var investigationConfig = InvestigationConfig.Default;
+        var eventLogReader = new EventLogReaderService(investigationConfig, loggerFactory.CreateLogger<EventLogReaderService>());
+        var processHistory = new ProcessHistoryService(investigationConfig, loggerFactory.CreateLogger<ProcessHistoryService>());
 
-        if (await TryRunAgentCommand(args, processTreeResolver, remediationPlanner, processSnapshotArchive, systemHealthService, slowdownAnalyzer, slowdownPlanner, processSnapshotService, ownerResolver, tagEnricher))
+        if (await TryRunAgentCommand(args, processTreeResolver, remediationPlanner, processSnapshotArchive, systemHealthService, slowdownAnalyzer, slowdownPlanner, processSnapshotService, ownerResolver, tagEnricher, externalTools, powerShellInvestigation, eventLogReader, processHistory))
         {
             return;
         }
@@ -1040,7 +1047,11 @@ class Program
         SlowdownPlannerService slowdownPlanner,
         ProcessSnapshotService processSnapshotService,
         OwnerResolver ownerResolver,
-        TagEnricher tagEnricher)
+        TagEnricher tagEnricher,
+        ExternalToolsService externalTools,
+        PowerShellInvestigationService powerShellInvestigation,
+        EventLogReaderService eventLogReader,
+        ProcessHistoryService processHistory)
     {
         if (args.Length == 0)
         {
@@ -1271,6 +1282,198 @@ class Program
                             }
                         }
                     }
+                }
+                return true;
+            }
+
+            if (command == "why-slow-json")
+            {
+                var focus = args.Length >= 2 ? string.Join(' ', args.Skip(1)) : null;
+                var diagnosis = slowdownAnalyzer.Diagnose(focus);
+                Console.WriteLine(JsonSerializer.Serialize(diagnosis, new JsonSerializerOptions { WriteIndented = true }));
+                return true;
+            }
+
+            if (command == "investigate")
+            {
+                if (args.Length < 2 || !int.TryParse(args[1], out var processId))
+                {
+                    Console.WriteLine("Usage: investigate <pid> [--ps] [--logs] [--handles] [--history]");
+                    return true;
+                }
+
+                var usePs = args.Contains("--ps");
+                var useLogs = args.Contains("--logs");
+                var useHandles = args.Contains("--handles");
+                var useHistory = args.Contains("--history");
+                var useAll = !usePs && !useLogs && !useHandles && !useHistory;
+
+                Console.WriteLine($"=== Investigating Process {processId} ===\n");
+
+                if (useAll || usePs)
+                {
+                    Console.WriteLine("--- PowerShell Investigation ---");
+                    var details = await powerShellInvestigation.GetProcessDetails(processId);
+                    if (details != null)
+                    {
+                        Console.WriteLine($"Process: {details.ProcessName} (PID: {details.ProcessId})");
+                        Console.WriteLine($"CPU Time: {details.CpuTime}");
+                        Console.WriteLine($"Working Set: {details.WorkingSet / 1024 / 1024:F1} MB");
+                        Console.WriteLine($"Private Memory: {details.PrivateMemory / 1024 / 1024:F1} MB");
+                        Console.WriteLine($"Handles: {details.HandleCount}");
+                        Console.WriteLine($"Threads: {details.ThreadCount}");
+                        Console.WriteLine($"Start Time: {details.StartTime:yyyy-MM-dd HH:mm:ss}");
+                        Console.WriteLine($"Path: {details.Path}");
+
+                        var threads = await powerShellInvestigation.GetProcessThreads(processId);
+                        if (threads.Count > 0)
+                        {
+                            Console.WriteLine($"\nThreads ({threads.Count}):");
+                            foreach (var thread in threads.Take(10))
+                            {
+                                Console.WriteLine($"  TID={thread.ThreadId} State={thread.State} WaitReason={thread.WaitReason}");
+                            }
+                        }
+
+                        var modules = await powerShellInvestigation.GetProcessModules(processId);
+                        if (modules.Count > 0)
+                        {
+                            Console.WriteLine($"\nModules ({modules.Count}):");
+                            foreach (var module in modules.Take(10))
+                            {
+                                Console.WriteLine($"  {module.FileName} ({module.Company} {module.ProductVersion})");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("Failed to get process details");
+                    }
+                }
+
+                if (useAll || useHandles)
+                {
+                    Console.WriteLine("\n--- Handles ---");
+                    var handles = await externalTools.GetProcessHandles(processId);
+                    Console.WriteLine(handles ?? "No handle information available");
+                }
+
+                if (useAll || useLogs)
+                {
+                    Console.WriteLine("\n--- Event Logs (last 24 hours) ---");
+                    var lookback = TimeSpan.FromHours(24);
+                    var errors = await eventLogReader.GetProcessErrors(processId, lookback);
+                    if (errors.Count > 0)
+                    {
+                        Console.WriteLine($"Found {errors.Count} log entries:");
+                        foreach (var error in errors.Take(10))
+                        {
+                            Console.WriteLine($"  [{error.Timestamp:yyyy-MM-dd HH:mm}] {error.Source} - {error.EntryType}: {error.Message.Substring(0, Math.Min(100, error.Message.Length))}");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("No recent log entries found");
+                    }
+                }
+
+                if (useAll || useHistory)
+                {
+                    Console.WriteLine("\n--- Process History ---");
+                    var history = processHistory.GetHistory(processId, 20);
+                    if (history.Count > 0)
+                    {
+                        Console.WriteLine($"Found {history.Count} historical entries:");
+                        foreach (var entry in history)
+                        {
+                            Console.WriteLine($"  [{entry.Timestamp:yyyy-MM-dd HH:mm}] CPU={entry.CpuPercent:F1}% MEM={entry.MemoryMB}MB Handles={entry.HandleCount}");
+                        }
+
+                        var trend = processHistory.GetTrend(processId, TimeSpan.FromHours(1));
+                        if (trend != null)
+                        {
+                            Console.WriteLine($"\nTrend (last hour): CPU={trend.CpuTrend:+0.0;-0.0}% MEM={trend.MemoryTrend:+0.0;-0.0}MB Handles={trend.HandleTrend:+0.0;-0.0}");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("No historical data found");
+                    }
+                }
+
+                return true;
+            }
+
+            if (command == "process-history")
+            {
+                if (args.Length >= 2 && int.TryParse(args[1], out var historyPid))
+                {
+                    var history = processHistory.GetHistory(historyPid, 50);
+                    if (history.Count > 0)
+                    {
+                        Console.WriteLine($"Process {historyPid} history ({history.Count} entries):");
+                        foreach (var entry in history)
+                        {
+                            Console.WriteLine($"  [{entry.Timestamp:yyyy-MM-dd HH:mm}] CPU={entry.CpuPercent:F1}% MEM={entry.MemoryMB}MB Handles={entry.HandleCount} Threads={entry.ThreadCount}");
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine("No historical data found for this process");
+                    }
+                }
+                else
+                {
+                    var recentHistory = processHistory.GetRecentHistory(50);
+                    Console.WriteLine($"Recent history ({recentHistory.Count} entries):");
+                    foreach (var entry in recentHistory)
+                    {
+                        Console.WriteLine($"  [{entry.Timestamp:yyyy-MM-dd HH:mm}] PID={entry.ProcessId} {entry.ProcessName} CPU={entry.CpuPercent:F1}% MEM={entry.MemoryMB}MB");
+                    }
+                }
+                return true;
+            }
+
+            if (command == "system-errors")
+            {
+                Console.WriteLine("=== System Errors (last 24 hours) ===\n");
+                var lookback = TimeSpan.FromHours(24);
+                var errors = await eventLogReader.GetSystemErrors(lookback);
+                if (errors.Count > 0)
+                {
+                    Console.WriteLine($"Found {errors.Count} errors/warnings:");
+                    foreach (var error in errors.Take(20))
+                    {
+                        Console.WriteLine($"  [{error.Timestamp:yyyy-MM-dd HH:mm}] {error.Source} - {error.EntryType}: {error.Message.Substring(0, Math.Min(150, error.Message.Length))}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("No recent system errors found");
+                }
+                return true;
+            }
+
+            if (command == "auto-snapshot")
+            {
+                if (args.Length < 2)
+                {
+                    Console.WriteLine("Usage: auto-snapshot <start|stop>");
+                    return true;
+                }
+
+                var action = args[1].ToLowerInvariant();
+                if (action == "start")
+                {
+                    Console.WriteLine("Auto-snapshot not implemented yet - would start periodic snapshots");
+                }
+                else if (action == "stop")
+                {
+                    Console.WriteLine("Auto-snapshot not implemented yet - would stop periodic snapshots");
+                }
+                else
+                {
+                    Console.WriteLine("Invalid action. Use: start or stop");
                 }
                 return true;
             }

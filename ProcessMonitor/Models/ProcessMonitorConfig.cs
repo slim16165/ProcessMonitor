@@ -27,6 +27,7 @@ public class ExternalToolsConfig
     public string? UIHangPath { get; set; }
     public string? ProcessExplorerPath { get; set; }
     public string? ProcmonPath { get; set; }
+    public string? HandlePath { get; set; }
     public string? EverythingPath { get; set; }
     public bool AutoAnalyzeBlockedProcesses { get; set; } = false;
     public string PreferredTool { get; set; } = "WhatIsHang";
@@ -38,4 +39,3 @@ public class ExternalTool
     public string Path { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
 }
-

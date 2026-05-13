@@ -1,0 +1,18 @@
+root = true
+
+[*.{cs,vb}]
+
+# Imposta la severità delle regole di complessità come errori di compilazione
+dotnet_diagnostic.CA1502.severity = error
+dotnet_diagnostic.CA1505.severity = error
+dotnet_diagnostic.CA1506.severity = error
+
+# Regole generali di maintainability
+dotnet_diagnostic.CA1500.severity = warning
+dotnet_diagnostic.CA1501.severity = warning
+dotnet_diagnostic.CA1504.severity = warning
+
+# Regole di design
+dotnet_diagnostic.CA1001.severity = warning
+dotnet_diagnostic.CA1002.severity = suggestion
+dotnet_diagnostic.CA1003.severity = warning

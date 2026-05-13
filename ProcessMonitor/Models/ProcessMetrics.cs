@@ -10,6 +10,17 @@ public class ProcessMetrics
     public double IoReadBytesPerSecond { get; set; }
     public double IoWriteBytesPerSecond { get; set; }
     public DateTime Timestamp { get; set; } = DateTime.Now;
+    
+    // Additional properties for threshold analysis
+    public int HandleCount { get; set; }
+    public int ThreadCount { get; set; }
+    public TimeSpan Duration { get; set; }
+    
+    // Computed properties for convenience
+    public double CpuPercent => CpuUsage;
+    public double MemoryMB => MemoryUsage / (1024.0 * 1024.0);
+    public double ReadMBps => IoReadBytesPerSecond / (1024.0 * 1024.0);
+    public double WriteMBps => IoWriteBytesPerSecond / (1024.0 * 1024.0);
 }
 
 public class CpuMetrics

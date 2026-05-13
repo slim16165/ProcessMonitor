@@ -221,6 +221,50 @@ public class ExternalToolsService
         }
     }
 
+    public async Task<string?> GetProcessHandles(int processId)
+    {
+        if (string.IsNullOrEmpty(_config.HandlePath) || !File.Exists(_config.HandlePath))
+        {
+            _logger?.LogWarning("handle.exe non trovato: {Path}", _config.HandlePath);
+            return "handle.exe non configurato. Scarica da https://learn.microsoft.com/sysinternals/downloads/handle";
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = _config.HandlePath,
+                Arguments = $"-p {processId}",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(startInfo);
+            if (process == null)
+                return null;
+
+            var output = await process.StandardOutput.ReadToEndAsync();
+            var error = await process.StandardError.ReadToEndAsync();
+            
+            var completed = await Task.Run(() => process.WaitForExit(30000));
+
+            if (!completed)
+            {
+                process.Kill();
+                return "Timeout durante l'analisi handles";
+            }
+
+            return string.IsNullOrEmpty(output) ? error : output;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Errore nell'esecuzione di handle.exe per PID {ProcessId}", processId);
+            return $"Errore: {ex.Message}";
+        }
+    }
+
     public List<ExternalTool> GetAvailableTools()
     {
         var tools = new List<ExternalTool>();
@@ -262,6 +306,16 @@ public class ExternalToolsService
                 Name = "Process Monitor",
                 Path = _config.ProcmonPath,
                 Description = "Monitora attività file system, registry e network"
+            });
+        }
+
+        if (!string.IsNullOrEmpty(_config.HandlePath) && File.Exists(_config.HandlePath))
+        {
+            tools.Add(new ExternalTool
+            {
+                Name = "Handle",
+                Path = _config.HandlePath,
+                Description = "Visualizza file handles aperti dai processi"
             });
         }
 
