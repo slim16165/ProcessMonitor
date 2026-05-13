@@ -62,7 +62,7 @@ class Program
         var processSnapshotArchive = new ProcessSnapshotArchiveService(processSnapshotService, ownerResolver, tagEnricher, systemHealthService);
         var remediationPlanner = new RemediationPlanner();
 
-        if (await TryRunAgentCommand(args, processTreeResolver, remediationPlanner, processSnapshotArchive, systemHealthService, slowdownAnalyzer, slowdownPlanner))
+        if (await TryRunAgentCommand(args, processTreeResolver, remediationPlanner, processSnapshotArchive, systemHealthService, slowdownAnalyzer, slowdownPlanner, processSnapshotService, ownerResolver, tagEnricher))
         {
             return;
         }
@@ -1037,7 +1037,10 @@ class Program
         ProcessSnapshotArchiveService snapshotArchive,
         SystemHealthService healthService,
         SlowdownAnalyzerService slowdownAnalyzer,
-        SlowdownPlannerService slowdownPlanner)
+        SlowdownPlannerService slowdownPlanner,
+        ProcessSnapshotService processSnapshotService,
+        OwnerResolver ownerResolver,
+        TagEnricher tagEnricher)
     {
         if (args.Length == 0)
         {
@@ -1237,6 +1240,38 @@ class Program
             {
                 GitRepositoryMapper.ClearMappings();
                 Console.WriteLine("Cleared all Git repository mappings");
+                return true;
+            }
+
+            if (command == "git-stuck")
+            {
+                var snapshot = processSnapshotService.CaptureSnapshot();
+                ownerResolver.AssignOwners(snapshot);
+                tagEnricher.ApplyTags(snapshot);
+                
+                var stuckProcesses = GitRepositoryMapper.GetStuckGitProcesses(snapshot);
+                
+                if (stuckProcesses.Count == 0)
+                {
+                    Console.WriteLine("No stuck Git processes detected.");
+                }
+                else
+                {
+                    Console.WriteLine($"Found {stuckProcesses.Count} Git processes:");
+                    foreach (var proc in stuckProcesses)
+                    {
+                        Console.WriteLine($"  [{proc.Status}] PID={proc.ProcessId} CPU={proc.CpuUsage:F1}% Duration={proc.Duration.TotalMinutes:F1}min");
+                        Console.WriteLine($"    Command: {proc.CommandLine}");
+                        if (proc.Repositories.Count > 0)
+                        {
+                            Console.WriteLine($"    Repositories:");
+                            foreach (var repo in proc.Repositories)
+                            {
+                                Console.WriteLine($"      - {repo.Path} (branch: {repo.Branch})");
+                            }
+                        }
+                    }
+                }
                 return true;
             }
 

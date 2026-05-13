@@ -6,6 +6,7 @@ namespace ProcessMonitor.Services;
 public static class GitRepositoryMapper
 {
     private static readonly Dictionary<string, List<GitRepository>> _processToRepositories = new();
+    private static readonly Dictionary<int, DateTime> _processStartTimes = new();
     private const string ConfigFileName = "git_repositories.json";
 
     static GitRepositoryMapper()
@@ -25,6 +26,9 @@ public static class GitRepositoryMapper
             LastSeen = DateTime.Now
         });
 
+        if (!_processStartTimes.ContainsKey(processId))
+            _processStartTimes[processId] = DateTime.Now;
+
         SaveConfiguration();
     }
 
@@ -43,7 +47,51 @@ public static class GitRepositoryMapper
     public static void ClearMappings()
     {
         _processToRepositories.Clear();
+        _processStartTimes.Clear();
         SaveConfiguration();
+    }
+
+    public static List<GitProcessStatus> GetStuckGitProcesses(List<ProcessTreeNode> processes, double cpuThreshold = 5.0, TimeSpan? stuckDuration = null)
+    {
+        var stuckDurationToUse = stuckDuration ?? TimeSpan.FromMinutes(5);
+        var stuckProcesses = new List<GitProcessStatus>();
+        var now = DateTime.Now;
+
+        foreach (var process in processes.Where(p => p.ProcessName.Equals("git.exe", StringComparison.OrdinalIgnoreCase)))
+        {
+            var repos = GetRepositoriesForProcess(process.ProcessId);
+            var startTime = _processStartTimes.TryGetValue(process.ProcessId, out var start) ? start : now;
+            var duration = now - startTime;
+
+            if (process.CpuUsage >= cpuThreshold && duration >= stuckDurationToUse)
+            {
+                stuckProcesses.Add(new GitProcessStatus
+                {
+                    ProcessId = process.ProcessId,
+                    ProcessName = process.ProcessName,
+                    CpuUsage = process.CpuUsage,
+                    Duration = duration,
+                    CommandLine = process.CommandLine,
+                    Repositories = repos,
+                    Status = "STUCK"
+                });
+            }
+            else if (process.CpuUsage >= cpuThreshold)
+            {
+                stuckProcesses.Add(new GitProcessStatus
+                {
+                    ProcessId = process.ProcessId,
+                    ProcessName = process.ProcessName,
+                    CpuUsage = process.CpuUsage,
+                    Duration = duration,
+                    CommandLine = process.CommandLine,
+                    Repositories = repos,
+                    Status = "ACTIVE"
+                });
+            }
+        }
+
+        return stuckProcesses;
     }
 
     private static void SaveConfiguration()
@@ -96,4 +144,15 @@ public class GitRepository
     public string Path { get; set; } = string.Empty;
     public string Branch { get; set; } = "main";
     public DateTime LastSeen { get; set; } = DateTime.Now;
+}
+
+public class GitProcessStatus
+{
+    public int ProcessId { get; set; }
+    public string ProcessName { get; set; } = string.Empty;
+    public double CpuUsage { get; set; }
+    public TimeSpan Duration { get; set; }
+    public string CommandLine { get; set; } = string.Empty;
+    public List<GitRepository> Repositories { get; set; } = new();
+    public string Status { get; set; } = "UNKNOWN";
 }
