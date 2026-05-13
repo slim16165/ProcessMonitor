@@ -58,7 +58,14 @@ dotnet run
 - `m` - Remediation dry-run
 - `k` - Remediation apply
 - `n` - Salva snapshot processi
-- `v` - Diff tra snapshot
+- `v` - Diff snapshot (`Enter` = latest vs stato attuale)
+
+Comandi non interattivi per agenti:
+
+- `snapshot-save <nota>`
+- `snapshot-list`
+- `snapshot-diff <baselineId> <currentId>`
+- `snapshot-diff-latest [nota-current]`
 
 ### Ownership E Tag
 
@@ -80,8 +87,10 @@ Puoi salvare snapshot annotati del sistema e confrontarli in seguito, ad esempio
 Il diff evidenzia:
 
 - crescita o riduzione per owner
-- nuove firme di processo
+- nuove firme di processo normalizzate
 - firme di processo scomparse
+
+La normalizzazione delle firme riduce il rumore dei processi ripetitivi, soprattutto per `git.exe`, shell wrapper e tool CLI che cambiano solo per PID, hash o path temporanei.
 
 ## Strumenti Esterni Supportati
 

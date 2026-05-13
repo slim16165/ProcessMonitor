@@ -81,7 +81,7 @@ class Program
         _logger.LogInformation("  'm' - Remediation dry-run (richiede PID)");
         _logger.LogInformation("  'k' - Remediation apply (richiede PID)");
         _logger.LogInformation("  'n' - Salva snapshot processi");
-        _logger.LogInformation("  'v' - Diff tra snapshot");
+        _logger.LogInformation("  'v' - Diff snapshot (Enter = latest vs stato attuale)");
 
         if (Console.IsInputRedirected)
         {
@@ -1021,55 +1021,72 @@ class Program
 
         var command = args[0].ToLowerInvariant();
 
-        if (command == "snapshot-save")
+        try
         {
-            var note = args.Length >= 2 ? string.Join(' ', args.Skip(1)) : "manual";
-            var snapshot = snapshotArchive.SaveSnapshot(note);
-            Console.WriteLine($"Snapshot salvato: {snapshot.SnapshotId} ({snapshot.Processes.Count} processi)");
-            return true;
-        }
-
-        if (command == "snapshot-list")
-        {
-            foreach (var snapshotId in snapshotArchive.ListSnapshots())
+            if (command == "snapshot-save")
             {
-                Console.WriteLine(snapshotId);
+                var note = args.Length >= 2 ? string.Join(' ', args.Skip(1)) : "manual";
+                var snapshot = snapshotArchive.SaveSnapshot(note);
+                Console.WriteLine($"Snapshot salvato: {snapshot.SnapshotId} ({snapshot.Processes.Count} processi)");
+                return true;
             }
-            return true;
-        }
 
-        if (command == "snapshot-diff" && args.Length >= 3)
-        {
-            var diff = snapshotArchive.DiffSnapshots(args[1], args[2]);
-            PrintSnapshotDiff(diff);
-            return true;
-        }
+            if (command == "snapshot-list")
+            {
+                foreach (var snapshotId in snapshotArchive.ListSnapshots())
+                {
+                    Console.WriteLine(snapshotId);
+                }
+                return true;
+            }
 
-        if (args.Length < 2 || !int.TryParse(args[1], out var pid))
-        {
-            return false;
-        }
+            if (command == "snapshot-diff" && args.Length >= 3)
+            {
+                var diff = snapshotArchive.DiffSnapshots(args[1], args[2]);
+                PrintSnapshotDiff(diff);
+                return true;
+            }
 
-        var investigation = resolver.InvestigateByPid(pid);
-        investigation.RemediationPlan = planner.BuildPlan(investigation);
+            if (command == "snapshot-diff-latest")
+            {
+                var note = args.Length >= 2 ? string.Join(' ', args.Skip(1)) : "current-live";
+                var diff = snapshotArchive.DiffLatestSnapshotAgainstCurrent(note);
+                PrintSnapshotDiff(diff);
+                return true;
+            }
 
-        switch (command)
-        {
-            case "inspect":
-                PrintInvestigation(investigation);
-                return true;
-            case "inspect-json":
-                Console.WriteLine(JsonSerializer.Serialize(investigation, new JsonSerializerOptions { WriteIndented = true }));
-                return true;
-            case "remediate-dry-run":
-                PrintRemediationPlan(investigation.RemediationPlan);
-                return true;
-            case "remediate-apply":
-                PrintRemediationPlan(investigation.RemediationPlan);
-                ApplyRemediationPlan(investigation.RemediationPlan);
-                return true;
-            default:
+            if (args.Length < 2 || !int.TryParse(args[1], out var pid))
+            {
                 return false;
+            }
+
+            var investigation = resolver.InvestigateByPid(pid);
+            investigation.RemediationPlan = planner.BuildPlan(investigation);
+
+            switch (command)
+            {
+                case "inspect":
+                    PrintInvestigation(investigation);
+                    return true;
+                case "inspect-json":
+                    Console.WriteLine(JsonSerializer.Serialize(investigation, new JsonSerializerOptions { WriteIndented = true }));
+                    return true;
+                case "remediate-dry-run":
+                    PrintRemediationPlan(investigation.RemediationPlan);
+                    return true;
+                case "remediate-apply":
+                    PrintRemediationPlan(investigation.RemediationPlan);
+                    ApplyRemediationPlan(investigation.RemediationPlan);
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Errore comando '{command}': {ex.Message}");
+            Environment.ExitCode = 1;
+            return true;
         }
     }
 
@@ -1205,9 +1222,9 @@ class Program
     private static void DiffProcessSnapshots(ProcessSnapshotArchiveService snapshotArchive)
     {
         var snapshots = snapshotArchive.ListSnapshots();
-        if (snapshots.Count < 2)
+        if (snapshots.Count < 1)
         {
-            Console.WriteLine("\nServono almeno due snapshot.");
+            Console.WriteLine("\nServe almeno uno snapshot salvato.");
             Console.WriteLine("\nPremi un tasto per continuare...");
             Console.ReadKey();
             return;
@@ -1219,22 +1236,28 @@ class Program
             Console.WriteLine($"  {snapshotId}");
         }
 
-        Console.Write("Baseline snapshot id: ");
+        Console.Write("Baseline snapshot id (Enter = latest): ");
         var baselineId = Console.ReadLine();
-        Console.Write("Current snapshot id: ");
+        Console.Write("Current snapshot id (Enter = stato attuale live): ");
         var currentId = Console.ReadLine();
-
-        if (string.IsNullOrWhiteSpace(baselineId) || string.IsNullOrWhiteSpace(currentId))
-        {
-            Console.WriteLine("Snapshot non validi.");
-            Console.WriteLine("\nPremi un tasto per continuare...");
-            Console.ReadKey();
-            return;
-        }
 
         try
         {
-            var diff = snapshotArchive.DiffSnapshots(baselineId, currentId);
+            var resolvedBaselineId = string.IsNullOrWhiteSpace(baselineId)
+                ? snapshotArchive.GetLatestSnapshotId()
+                : baselineId;
+
+            if (string.IsNullOrWhiteSpace(resolvedBaselineId))
+            {
+                Console.WriteLine("Snapshot baseline non valido.");
+                Console.WriteLine("\nPremi un tasto per continuare...");
+                Console.ReadKey();
+                return;
+            }
+
+            var diff = string.IsNullOrWhiteSpace(currentId)
+                ? snapshotArchive.DiffSnapshotAgainstCurrent(resolvedBaselineId)
+                : snapshotArchive.DiffSnapshots(resolvedBaselineId, currentId);
             PrintSnapshotDiff(diff);
         }
         catch (Exception ex)
@@ -1267,7 +1290,7 @@ class Program
             Console.WriteLine("\nNew signatures:");
             foreach (var item in diff.NewSignatures.Take(15))
             {
-                Console.WriteLine($"  {item.OwnerId} | {item.ProcessName}: +{item.DeltaCount}");
+                Console.WriteLine($"  {item.OwnerId} | {item.ProcessName}: +{item.DeltaCount} [{item.SignatureDetail}]");
             }
         }
 
@@ -1276,7 +1299,7 @@ class Program
             Console.WriteLine("\nRemoved signatures:");
             foreach (var item in diff.RemovedSignatures.Take(15))
             {
-                Console.WriteLine($"  {item.OwnerId} | {item.ProcessName}: {item.DeltaCount}");
+                Console.WriteLine($"  {item.OwnerId} | {item.ProcessName}: {item.DeltaCount} [{item.SignatureDetail}]");
             }
         }
     }

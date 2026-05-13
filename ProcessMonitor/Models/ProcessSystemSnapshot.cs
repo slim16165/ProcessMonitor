@@ -47,6 +47,7 @@ public class OwnerDelta
 public class ProcessSignatureDelta
 {
     public string Signature { get; set; } = string.Empty;
+    public string SignatureDetail { get; set; } = string.Empty;
     public string ProcessName { get; set; } = string.Empty;
     public string? OwnerId { get; set; }
     public int BaselineCount { get; set; }

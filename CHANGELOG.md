@@ -6,3 +6,5 @@
 - Added owner taxonomy and flat tags for process classification, including IDE, terminal, runtime, and Git-related processes.
 - Added interactive commands for process tree inspect, JSON inspect, remediation dry-run, and remediation apply.
 - Added annotated process snapshots and snapshot diff to compare baseline and degraded system states.
+- Improved snapshot diff normalization to group repetitive Git and shell processes more cleanly.
+- Added latest-snapshot versus current-live diff flow for interactive and agent-driven usage.
