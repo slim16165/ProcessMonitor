@@ -56,14 +56,25 @@ public static class GitRepositoryMapper
         var stuckDurationToUse = stuckDuration ?? TimeSpan.FromMinutes(5);
         var stuckProcesses = new List<GitProcessStatus>();
         var now = DateTime.Now;
+        var gitProcesses = processes.Where(p => p.ProcessName.Equals("git.exe", StringComparison.OrdinalIgnoreCase)).ToList();
 
-        foreach (var process in processes.Where(p => p.ProcessName.Equals("git.exe", StringComparison.OrdinalIgnoreCase)))
+        // Calculate heuristic score
+        var totalGitCpu = gitProcesses.Sum(p => p.CpuUsage);
+        var highCpuCount = gitProcesses.Count(p => p.CpuUsage >= cpuThreshold);
+        var gitProcessCount = gitProcesses.Count;
+        
+        // Adjust threshold based on number of git processes
+        // If many git processes, lower the individual threshold
+        var adjustedCpuThreshold = gitProcessCount > 5 ? cpuThreshold * 0.7 : cpuThreshold;
+        var adjustedStuckDuration = gitProcessCount > 5 ? stuckDurationToUse * 0.6 : stuckDurationToUse;
+
+        foreach (var process in gitProcesses)
         {
             var repos = GetRepositoriesForProcess(process.ProcessId);
             var startTime = _processStartTimes.TryGetValue(process.ProcessId, out var start) ? start : now;
             var duration = now - startTime;
 
-            if (process.CpuUsage >= cpuThreshold && duration >= stuckDurationToUse)
+            if (process.CpuUsage >= adjustedCpuThreshold && duration >= adjustedStuckDuration)
             {
                 stuckProcesses.Add(new GitProcessStatus
                 {
@@ -76,7 +87,7 @@ public static class GitRepositoryMapper
                     Status = "STUCK"
                 });
             }
-            else if (process.CpuUsage >= cpuThreshold)
+            else if (process.CpuUsage >= adjustedCpuThreshold)
             {
                 stuckProcesses.Add(new GitProcessStatus
                 {
@@ -91,7 +102,28 @@ public static class GitRepositoryMapper
             }
         }
 
+        // Add heuristic score to the last status or create a summary
+        if (gitProcessCount > 0)
+        {
+            var heuristicScore = CalculateGitHeuristicScore(gitProcessCount, totalGitCpu, highCpuCount);
+            Console.WriteLine($"Git heuristic: {gitProcessCount} processes, {totalGitCpu:F1}% total CPU, {highCpuCount} high CPU - Score: {heuristicScore:F1}");
+        }
+
         return stuckProcesses;
+    }
+
+    private static double CalculateGitHeuristicScore(int processCount, double totalCpu, int highCpuCount)
+    {
+        // Score components:
+        // - Many git processes: higher score
+        // - High total CPU: higher score
+        // - Many high-CPU processes: higher score
+        
+        var processScore = Math.Min(processCount * 5, 50); // Max 50 points for process count
+        var cpuScore = Math.Min(totalCpu * 2, 30); // Max 30 points for total CPU
+        var highCpuScore = Math.Min(highCpuCount * 10, 20); // Max 20 points for high-CPU count
+        
+        return processScore + cpuScore + highCpuScore;
     }
 
     private static void SaveConfiguration()
