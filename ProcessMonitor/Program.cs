@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 using ProcessMonitor.Models;
 using ProcessMonitor.Services;
 
@@ -43,6 +44,20 @@ class Program
         var directoryAnalyzer = new DirectoryAnalyzer(monitorConfig);
         var externalTools = new ExternalToolsService(externalToolsConfig, loggerFactory.CreateLogger<ExternalToolsService>());
         var consoleProcessMonitor = new ConsoleProcessMonitor(monitorConfig);
+        var gitRepositoryAnalyzer = new GitRepositoryAnalyzer(monitorConfig);
+        var everythingService = new EverythingService(externalToolsConfig.EverythingPath);
+        var processDetailsService = new ProcessDetailsService();
+        var consoleSessionManager = new ConsoleSessionManager(monitorConfig);
+        var processSnapshotService = new ProcessSnapshotService(monitorConfig, commandAnalyzer);
+        var ownerResolver = new OwnerResolver();
+        var tagEnricher = new TagEnricher();
+        var processTreeResolver = new ProcessTreeResolver(processSnapshotService, ownerResolver, tagEnricher);
+        var remediationPlanner = new RemediationPlanner();
+
+        if (await TryRunAgentCommand(args, processTreeResolver, remediationPlanner))
+        {
+            return;
+        }
 
         _logger.LogInformation("=== Process Monitor Avviato ===");
         _logger.LogInformation("Comandi disponibili:");
@@ -56,6 +71,20 @@ class Program
         _logger.LogInformation("  'p' - Apri Procmon");
         _logger.LogInformation("  't' - Lista strumenti disponibili");
         _logger.LogInformation("  'c' - Monitor Console/Git (tabella grafica)");
+        _logger.LogInformation("  'r' - Trova repo Git enormi");
+        _logger.LogInformation("  'd' - Dettagli processo Git (richiede PID)");
+        _logger.LogInformation("  'z' - Gestione sessioni console zombie");
+        _logger.LogInformation("  'g' - Apri Resource Monitor");
+        _logger.LogInformation("  'i' - Inspect process tree (richiede PID)");
+        _logger.LogInformation("  'j' - Inspect process tree JSON (richiede PID)");
+        _logger.LogInformation("  'm' - Remediation dry-run (richiede PID)");
+        _logger.LogInformation("  'k' - Remediation apply (richiede PID)");
+
+        if (Console.IsInputRedirected)
+        {
+            _logger.LogWarning("Input console rediretto: modalità interattiva non disponibile");
+            return;
+        }
 
         var cancellationTokenSource = new CancellationTokenSource();
 
@@ -130,7 +159,7 @@ class Program
         // Loop principale per comandi interattivi
         while (!cancellationTokenSource.Token.IsCancellationRequested)
         {
-            if (Console.KeyAvailable)
+            if (!Console.IsInputRedirected && Console.KeyAvailable)
             {
                 var key = Console.ReadKey(true);
                 
@@ -175,6 +204,38 @@ class Program
                 else if (key.KeyChar == 'c' || key.KeyChar == 'C')
                 {
                     ShowConsoleGitMonitor(consoleProcessMonitor);
+                }
+                else if (key.KeyChar == 'r' || key.KeyChar == 'R')
+                {
+                    await FindLargeGitRepositories(gitRepositoryAnalyzer, everythingService);
+                }
+                else if (key.KeyChar == 'd' || key.KeyChar == 'D')
+                {
+                    await ShowGitProcessDetails(processDetailsService, externalTools);
+                }
+                else if (key.KeyChar == 'z' || key.KeyChar == 'Z')
+                {
+                    await ManageZombieSessions(consoleSessionManager);
+                }
+                else if (key.KeyChar == 'g' || key.KeyChar == 'G')
+                {
+                    OpenResourceMonitor(externalTools);
+                }
+                else if (key.KeyChar == 'i' || key.KeyChar == 'I')
+                {
+                    await InspectProcessTree(processTreeResolver, remediationPlanner, asJson: false, applyRemediation: false);
+                }
+                else if (key.KeyChar == 'j' || key.KeyChar == 'J')
+                {
+                    await InspectProcessTree(processTreeResolver, remediationPlanner, asJson: true, applyRemediation: false);
+                }
+                else if (key.KeyChar == 'm' || key.KeyChar == 'M')
+                {
+                    await InspectProcessTree(processTreeResolver, remediationPlanner, asJson: false, applyRemediation: false, showOnlyRemediation: true);
+                }
+                else if (key.KeyChar == 'k' || key.KeyChar == 'K')
+                {
+                    await InspectProcessTree(processTreeResolver, remediationPlanner, asJson: false, applyRemediation: true);
                 }
             }
 
@@ -611,5 +672,481 @@ class Program
             return $"{uptime.Minutes}m {uptime.Seconds}s";
         else
             return $"{uptime.Seconds}s";
+    }
+
+    private static async Task FindLargeGitRepositories(
+        GitRepositoryAnalyzer gitRepositoryAnalyzer,
+        EverythingService everythingService)
+    {
+        Console.WriteLine("\n=== Trova Repository Git Enormi ===");
+        Console.WriteLine("Scegli metodo:");
+        Console.WriteLine("  1 - Usa Everything (più veloce, se disponibile)");
+        Console.WriteLine("  2 - Usa du.exe/PowerShell (più lento ma accurato)");
+        Console.Write("Scelta (1 o 2): ");
+
+        var choice = Console.ReadLine();
+        var repositories = new List<LargeGitRepository>();
+
+        try
+        {
+            if (choice == "1" && everythingService.IsAvailable())
+            {
+                Console.WriteLine("\n🔍 Cerca con Everything...");
+                repositories = await everythingService.FindLargeGitDirsWithEverythingAsync(20);
+            }
+            else
+            {
+                Console.Write("\nInserisci path root da analizzare (lascia vuoto per C:\\Users): ");
+                var rootPath = Console.ReadLine();
+                if (string.IsNullOrWhiteSpace(rootPath))
+                {
+                    rootPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+                }
+
+                Console.WriteLine($"\n🔍 Analizza repository Git in {rootPath}...");
+                Console.WriteLine("(Questo potrebbe richiedere alcuni minuti...)");
+                
+                repositories = await gitRepositoryAnalyzer.FindLargeGitRepositoriesAsync(rootPath, 20, 100);
+            }
+
+            if (!repositories.Any())
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("\n✓ Nessun repository Git grande trovato");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.WriteLine($"\n📦 Trovati {repositories.Count} repository Git grandi:\n");
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"{"Repository",-60} {"Dimensione .git",-20} {"Dimensione Totale",-20} {"File",-10}");
+                Console.WriteLine(new string('-', 120));
+                Console.ResetColor();
+
+                foreach (var repo in repositories)
+                {
+                    var sizeColor = repo.IsLarge ? ConsoleColor.Red : ConsoleColor.Yellow;
+                    Console.ForegroundColor = sizeColor;
+                    var repoName = repo.RepositoryPath.Length > 58 
+                        ? repo.RepositoryPath.Substring(0, 55) + "..." 
+                        : repo.RepositoryPath;
+                    Console.Write($"{repoName,-60}");
+                    Console.ResetColor();
+                    Console.WriteLine($"{repo.FormattedGitSize,-20} {repo.FormattedTotalSize,-20} {repo.TrackedFileCount,-10}");
+                }
+
+                Console.WriteLine(new string('-', 120));
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("\n💡 Suggerimento: Considera di escludere questi repository dal caching Git");
+                Console.ResetColor();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n❌ Errore: {ex.Message}");
+            Console.ResetColor();
+        }
+
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+    }
+
+    private static async Task ShowGitProcessDetails(
+        ProcessDetailsService processDetailsService,
+        ExternalToolsService externalTools)
+    {
+        Console.Write("\nInserisci PID del processo Git da analizzare: ");
+        if (!int.TryParse(Console.ReadLine(), out var pid))
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("PID non valido");
+            Console.ResetColor();
+            return;
+        }
+
+        try
+        {
+            Console.WriteLine("\n=== Dettagli Processo Git ===");
+            Console.WriteLine("Analisi in corso...\n");
+
+            var details = await processDetailsService.GetGitProcessDetailsAsync(pid);
+
+            Console.WriteLine($"PID: {details.ProcessId}");
+            Console.WriteLine($"Nome: {details.ProcessName}");
+            Console.WriteLine($"Start Time: {details.StartTime:yyyy-MM-dd HH:mm:ss}");
+            Console.WriteLine($"CPU: {details.CpuUsage:F2}%");
+            Console.WriteLine($"Memoria: {details.MemoryMB:F2} MB");
+            Console.WriteLine($"Risponde: {(details.IsResponding ? "Sì" : "No")}");
+
+            if (!string.IsNullOrEmpty(details.CommandLine))
+            {
+                Console.WriteLine($"\nComando:");
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"  {details.CommandLine}");
+                Console.ResetColor();
+            }
+
+            if (!string.IsNullOrEmpty(details.WorkingDirectory))
+            {
+                Console.WriteLine($"\nWorking Directory:");
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"  {details.WorkingDirectory}");
+                Console.ResetColor();
+            }
+
+            if (!string.IsNullOrEmpty(details.GitCommand))
+            {
+                Console.WriteLine($"\nComando Git: {details.GitCommand}");
+            }
+
+            if (!string.IsNullOrEmpty(details.GitRepository))
+            {
+                Console.WriteLine($"\nRepository Git:");
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"  {details.GitRepository}");
+                Console.ResetColor();
+            }
+
+            Console.WriteLine($"\nI/O Disco:");
+            Console.WriteLine($"  Lettura: {details.IoInfo.ReadMBps:F2} MB/s");
+            Console.WriteLine($"  Scrittura: {details.IoInfo.WriteMBps:F2} MB/s");
+            Console.WriteLine($"  Totale: {details.IoInfo.TotalMBps:F2} MB/s");
+
+            if (details.IsBlockedOnIo)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("\n⚠️  Processo bloccato su I/O!");
+                Console.ResetColor();
+            }
+
+            Console.WriteLine("\nAzioni disponibili:");
+            Console.WriteLine("  'e' - Apri Process Explorer");
+            Console.WriteLine("  'g' - Apri Resource Monitor");
+            Console.WriteLine("  'p' - Apri Procmon");
+            Console.Write("\nScelta (o Enter per continuare): ");
+
+            var key = Console.ReadKey();
+            if (key.KeyChar == 'e' || key.KeyChar == 'E')
+            {
+                externalTools.OpenWithProcessExplorer(pid);
+            }
+            else if (key.KeyChar == 'g' || key.KeyChar == 'G')
+            {
+                externalTools.OpenWithResourceMonitor(pid);
+            }
+            else if (key.KeyChar == 'p' || key.KeyChar == 'P')
+            {
+                externalTools.OpenWithProcmon(pid);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n❌ Errore: {ex.Message}");
+            Console.ResetColor();
+        }
+
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+    }
+
+    private static async Task ManageZombieSessions(ConsoleSessionManager consoleSessionManager)
+    {
+        Console.WriteLine("\n=== Gestione Sessioni Console Zombie ===");
+
+        var zombies = consoleSessionManager.FindZombieSessions();
+
+        if (!zombies.Any())
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("✓ Nessuna sessione zombie trovata");
+            Console.ResetColor();
+        }
+        else
+        {
+            Console.WriteLine($"\n🔍 Trovate {zombies.Count} sessioni zombie:\n");
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"{"PID",-8} {"Uptime",-15} {"CPU%",-8} {"MemMB",-10} {"Comando",-50}");
+            Console.WriteLine(new string('-', 100));
+            Console.ResetColor();
+
+            foreach (var zombie in zombies)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.Write($"{zombie.ProcessId,-8} {zombie.FormattedUptime,-15} {zombie.CpuUsage,-8:F1} {zombie.MemoryMB,-10:F1} ");
+                Console.ResetColor();
+                
+                var cmd = zombie.CommandLine.Length > 48 
+                    ? zombie.CommandLine.Substring(0, 45) + "..." 
+                    : zombie.CommandLine;
+                Console.WriteLine(cmd);
+            }
+
+            Console.WriteLine(new string('-', 100));
+            Console.WriteLine("\nAzioni disponibili:");
+            Console.WriteLine("  'c' - Chiudi sessioni zombie");
+            Console.WriteLine("  'o' - Chiudi sessioni più vecchie di 1 ora");
+            Console.WriteLine("  't' - Chiudi TGitCache.exe");
+            Console.Write("\nScelta (o Enter per continuare): ");
+
+            var key = Console.ReadKey();
+            Console.WriteLine();
+
+            if (key.KeyChar == 'c' || key.KeyChar == 'C')
+            {
+                var closed = consoleSessionManager.CloseOldSessions(TimeSpan.FromMinutes(0), force: false);
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"\n✓ Chiuse {closed} sessioni zombie");
+                Console.ResetColor();
+            }
+            else if (key.KeyChar == 'o' || key.KeyChar == 'O')
+            {
+                var closed = consoleSessionManager.CloseOldSessions(TimeSpan.FromHours(1), force: false);
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"\n✓ Chiuse {closed} sessioni vecchie");
+                Console.ResetColor();
+            }
+            else if (key.KeyChar == 't' || key.KeyChar == 'T')
+            {
+                var closed = consoleSessionManager.CloseTGitCache();
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"\n✓ Chiusi {closed} processi TGitCache.exe");
+                Console.ResetColor();
+            }
+        }
+
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+    }
+
+    private static void OpenResourceMonitor(ExternalToolsService externalTools)
+    {
+        Console.Write("\nInserisci PID del processo (opzionale, lascia vuoto per aprire senza filtro): ");
+        var input = Console.ReadLine();
+        
+        int? pid = null;
+        if (!string.IsNullOrWhiteSpace(input) && int.TryParse(input, out var parsedPid))
+        {
+            pid = parsedPid;
+        }
+
+        var result = externalTools.OpenWithResourceMonitor(pid);
+        if (result)
+        {
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine("Resource Monitor avviato con successo");
+            Console.ResetColor();
+            if (pid.HasValue)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Nota: Filtra manualmente per PID {pid.Value} nella scheda Disk");
+                Console.ResetColor();
+            }
+        }
+        else
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("Errore nell'avvio di Resource Monitor");
+            Console.ResetColor();
+        }
+
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+    }
+
+    private static async Task InspectProcessTree(
+        ProcessTreeResolver resolver,
+        RemediationPlanner planner,
+        bool asJson,
+        bool applyRemediation,
+        bool showOnlyRemediation = false)
+    {
+        Console.Write("\nInserisci PID del processo da investigare: ");
+        if (!int.TryParse(Console.ReadLine(), out var pid))
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine("PID non valido");
+            Console.ResetColor();
+            return;
+        }
+
+        var investigation = resolver.InvestigateByPid(pid);
+        investigation.RemediationPlan = planner.BuildPlan(investigation);
+
+        if (applyRemediation)
+        {
+            ApplyRemediationPlan(investigation.RemediationPlan);
+        }
+
+        if (asJson)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(investigation, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        else if (showOnlyRemediation)
+        {
+            PrintRemediationPlan(investigation.RemediationPlan);
+        }
+        else
+        {
+            PrintInvestigation(investigation);
+        }
+
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+        await Task.CompletedTask;
+    }
+
+    private static async Task<bool> TryRunAgentCommand(
+        string[] args,
+        ProcessTreeResolver resolver,
+        RemediationPlanner planner)
+    {
+        if (args.Length < 2 || !int.TryParse(args[1], out var pid))
+        {
+            return false;
+        }
+
+        var command = args[0].ToLowerInvariant();
+        var investigation = resolver.InvestigateByPid(pid);
+        investigation.RemediationPlan = planner.BuildPlan(investigation);
+
+        switch (command)
+        {
+            case "inspect":
+                PrintInvestigation(investigation);
+                return true;
+            case "inspect-json":
+                Console.WriteLine(JsonSerializer.Serialize(investigation, new JsonSerializerOptions { WriteIndented = true }));
+                return true;
+            case "remediate-dry-run":
+                PrintRemediationPlan(investigation.RemediationPlan);
+                return true;
+            case "remediate-apply":
+                PrintRemediationPlan(investigation.RemediationPlan);
+                ApplyRemediationPlan(investigation.RemediationPlan);
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static void PrintInvestigation(ProcessInvestigation investigation)
+    {
+        Console.WriteLine("\n=== Process Investigation ===");
+        Console.WriteLine($"Root: {investigation.RootProcessName} ({investigation.RootProcessId})");
+        Console.WriteLine($"Captured: {investigation.CapturedAt:yyyy-MM-dd HH:mm:ss}");
+
+        if (investigation.Root == null)
+        {
+            Console.WriteLine("Nessun albero disponibile.");
+            return;
+        }
+
+        PrintTreeNode(investigation.Root, 0);
+
+        if (investigation.Evidence.Any())
+        {
+            Console.WriteLine("\nEvidence:");
+            foreach (var evidence in investigation.Evidence.Take(20))
+            {
+                Console.WriteLine($"  PID {evidence.ProcessId}: {evidence.Kind} - {evidence.Detail}");
+            }
+        }
+
+        if (investigation.Orphans.Any())
+        {
+            Console.WriteLine("\nOrphans:");
+            foreach (var orphan in investigation.Orphans.Take(10))
+            {
+                Console.WriteLine($"  PID {orphan.ProcessId} {orphan.ProcessName} {orphan.CommandLine}");
+            }
+        }
+
+        if (investigation.Owners.Any())
+        {
+            Console.WriteLine("\nOwners:");
+            foreach (var owner in investigation.Owners.Take(10))
+            {
+                Console.WriteLine($"  {string.Join(" > ", owner.OwnerPath)}: {owner.ProcessCount} processi [{string.Join(", ", owner.Tags.Take(6))}]");
+            }
+        }
+
+        Console.WriteLine();
+        PrintRemediationPlan(investigation.RemediationPlan);
+    }
+
+    private static void PrintTreeNode(ProcessTreeNode node, int depth)
+    {
+        var indent = new string(' ', depth * 2);
+        Console.WriteLine($"{indent}- PID {node.ProcessId} {node.ProcessName} [{node.LaunchCategory}] CPU={node.CpuUsage:F1}% MEM={node.MemoryMB:F1}MB TCP={(node.HasTcpActivity ? "Y" : "N")}");
+        if (node.OwnerPath.Any())
+        {
+            Console.WriteLine($"{indent}  OWNER: {string.Join(" > ", node.OwnerPath)}");
+        }
+        if (node.Tags.Any())
+        {
+            Console.WriteLine($"{indent}  TAGS: {string.Join(", ", node.Tags)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(node.CommandLine))
+        {
+            Console.WriteLine($"{indent}  CMD: {node.CommandLine}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(node.WorkingDirectory))
+        {
+            Console.WriteLine($"{indent}  CWD: {node.WorkingDirectory}");
+        }
+
+        foreach (var child in node.Children)
+        {
+            PrintTreeNode(child, depth + 1);
+        }
+    }
+
+    private static void PrintRemediationPlan(RemediationPlan plan)
+    {
+        Console.WriteLine("=== Remediation Plan ===");
+        Console.WriteLine(plan.Summary);
+
+        foreach (var reason in plan.Reasons)
+        {
+            Console.WriteLine($"  - {reason}");
+        }
+
+        if (plan.KillOrder.Any())
+        {
+            Console.WriteLine($"Kill order: {string.Join(", ", plan.KillOrder)}");
+        }
+
+        if (plan.HoldOpen.Any())
+        {
+            Console.WriteLine($"Hold open: {string.Join(", ", plan.HoldOpen)}");
+        }
+    }
+
+    private static void ApplyRemediationPlan(RemediationPlan plan)
+    {
+        if (!plan.KillOrder.Any())
+        {
+            Console.WriteLine("Nessun processo da terminare.");
+            return;
+        }
+
+        Console.WriteLine("\n=== Apply Remediation ===");
+        foreach (var pid in plan.KillOrder)
+        {
+            try
+            {
+                using var process = System.Diagnostics.Process.GetProcessById(pid);
+                process.Kill(entireProcessTree: false);
+                Console.WriteLine($"Terminato PID {pid}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Errore terminando PID {pid}: {ex.Message}");
+            }
+        }
     }
 }
