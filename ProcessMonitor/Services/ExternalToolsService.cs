@@ -138,6 +138,46 @@ public class ExternalToolsService
         }
     }
 
+    public bool OpenWithResourceMonitor(int? processId = null)
+    {
+        // Resource Monitor è in System32
+        var resmonPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "resmon.exe");
+        
+        if (!File.Exists(resmonPath))
+        {
+            _logger?.LogWarning("Resource Monitor non trovato: {Path}", resmonPath);
+            return false;
+        }
+
+        try
+        {
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = resmonPath,
+                Arguments = "", // Resource Monitor non supporta filtri per PID dalla CLI
+                UseShellExecute = true,
+                CreateNoWindow = false
+            };
+
+            var process = Process.Start(startInfo);
+            _logger?.LogInformation("Resource Monitor avviato");
+            
+            // Nota: Resource Monitor non supporta filtri per PID dalla command line
+            // L'utente dovrà filtrare manualmente nella scheda Disk
+            if (processId.HasValue)
+            {
+                _logger?.LogInformation("Nota: Filtra manualmente per PID {ProcessId} nella scheda Disk", processId.Value);
+            }
+            
+            return process != null;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(ex, "Errore nell'avvio di Resource Monitor");
+            return false;
+        }
+    }
+
     public async Task<string?> RunWhatIsHangAsync(int processId, int timeoutSeconds = 30)
     {
         if (string.IsNullOrEmpty(_config.WhatIsHangPath) || !File.Exists(_config.WhatIsHangPath))
@@ -222,6 +262,18 @@ public class ExternalToolsService
                 Name = "Process Monitor",
                 Path = _config.ProcmonPath,
                 Description = "Monitora attività file system, registry e network"
+            });
+        }
+
+        // Resource Monitor è sempre disponibile in Windows
+        var resmonPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "resmon.exe");
+        if (File.Exists(resmonPath))
+        {
+            tools.Add(new ExternalTool
+            {
+                Name = "Resource Monitor",
+                Path = resmonPath,
+                Description = "Monitora I/O disco, CPU, memoria e network per processi"
             });
         }
 
