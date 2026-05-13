@@ -52,9 +52,10 @@ class Program
         var ownerResolver = new OwnerResolver();
         var tagEnricher = new TagEnricher();
         var processTreeResolver = new ProcessTreeResolver(processSnapshotService, ownerResolver, tagEnricher);
+        var processSnapshotArchive = new ProcessSnapshotArchiveService(processSnapshotService, ownerResolver, tagEnricher);
         var remediationPlanner = new RemediationPlanner();
 
-        if (await TryRunAgentCommand(args, processTreeResolver, remediationPlanner))
+        if (await TryRunAgentCommand(args, processTreeResolver, remediationPlanner, processSnapshotArchive))
         {
             return;
         }
@@ -79,6 +80,8 @@ class Program
         _logger.LogInformation("  'j' - Inspect process tree JSON (richiede PID)");
         _logger.LogInformation("  'm' - Remediation dry-run (richiede PID)");
         _logger.LogInformation("  'k' - Remediation apply (richiede PID)");
+        _logger.LogInformation("  'n' - Salva snapshot processi");
+        _logger.LogInformation("  'v' - Diff tra snapshot");
 
         if (Console.IsInputRedirected)
         {
@@ -236,6 +239,14 @@ class Program
                 else if (key.KeyChar == 'k' || key.KeyChar == 'K')
                 {
                     await InspectProcessTree(processTreeResolver, remediationPlanner, asJson: false, applyRemediation: true);
+                }
+                else if (key.KeyChar == 'n' || key.KeyChar == 'N')
+                {
+                    SaveProcessSnapshot(processSnapshotArchive);
+                }
+                else if (key.KeyChar == 'v' || key.KeyChar == 'V')
+                {
+                    DiffProcessSnapshots(processSnapshotArchive);
                 }
             }
 
@@ -1000,14 +1011,45 @@ class Program
     private static async Task<bool> TryRunAgentCommand(
         string[] args,
         ProcessTreeResolver resolver,
-        RemediationPlanner planner)
+        RemediationPlanner planner,
+        ProcessSnapshotArchiveService snapshotArchive)
     {
-        if (args.Length < 2 || !int.TryParse(args[1], out var pid))
+        if (args.Length == 0)
         {
             return false;
         }
 
         var command = args[0].ToLowerInvariant();
+
+        if (command == "snapshot-save")
+        {
+            var note = args.Length >= 2 ? string.Join(' ', args.Skip(1)) : "manual";
+            var snapshot = snapshotArchive.SaveSnapshot(note);
+            Console.WriteLine($"Snapshot salvato: {snapshot.SnapshotId} ({snapshot.Processes.Count} processi)");
+            return true;
+        }
+
+        if (command == "snapshot-list")
+        {
+            foreach (var snapshotId in snapshotArchive.ListSnapshots())
+            {
+                Console.WriteLine(snapshotId);
+            }
+            return true;
+        }
+
+        if (command == "snapshot-diff" && args.Length >= 3)
+        {
+            var diff = snapshotArchive.DiffSnapshots(args[1], args[2]);
+            PrintSnapshotDiff(diff);
+            return true;
+        }
+
+        if (args.Length < 2 || !int.TryParse(args[1], out var pid))
+        {
+            return false;
+        }
+
         var investigation = resolver.InvestigateByPid(pid);
         investigation.RemediationPlan = planner.BuildPlan(investigation);
 
@@ -1146,6 +1188,95 @@ class Program
             catch (Exception ex)
             {
                 Console.WriteLine($"Errore terminando PID {pid}: {ex.Message}");
+            }
+        }
+    }
+
+    private static void SaveProcessSnapshot(ProcessSnapshotArchiveService snapshotArchive)
+    {
+        Console.Write("\nNota snapshot: ");
+        var note = Console.ReadLine();
+        var snapshot = snapshotArchive.SaveSnapshot(string.IsNullOrWhiteSpace(note) ? "manual" : note);
+        Console.WriteLine($"Snapshot salvato: {snapshot.SnapshotId} ({snapshot.Processes.Count} processi)");
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+    }
+
+    private static void DiffProcessSnapshots(ProcessSnapshotArchiveService snapshotArchive)
+    {
+        var snapshots = snapshotArchive.ListSnapshots();
+        if (snapshots.Count < 2)
+        {
+            Console.WriteLine("\nServono almeno due snapshot.");
+            Console.WriteLine("\nPremi un tasto per continuare...");
+            Console.ReadKey();
+            return;
+        }
+
+        Console.WriteLine("\nSnapshot disponibili:");
+        foreach (var snapshotId in snapshots.Take(10))
+        {
+            Console.WriteLine($"  {snapshotId}");
+        }
+
+        Console.Write("Baseline snapshot id: ");
+        var baselineId = Console.ReadLine();
+        Console.Write("Current snapshot id: ");
+        var currentId = Console.ReadLine();
+
+        if (string.IsNullOrWhiteSpace(baselineId) || string.IsNullOrWhiteSpace(currentId))
+        {
+            Console.WriteLine("Snapshot non validi.");
+            Console.WriteLine("\nPremi un tasto per continuare...");
+            Console.ReadKey();
+            return;
+        }
+
+        try
+        {
+            var diff = snapshotArchive.DiffSnapshots(baselineId, currentId);
+            PrintSnapshotDiff(diff);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Errore diff snapshot: {ex.Message}");
+        }
+
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+    }
+
+    private static void PrintSnapshotDiff(ProcessSnapshotDiff diff)
+    {
+        Console.WriteLine("=== Snapshot Diff ===");
+        Console.WriteLine($"Baseline: {diff.BaselineId} ({diff.BaselineCount})");
+        Console.WriteLine($"Current:  {diff.CurrentId} ({diff.CurrentCount})");
+        Console.WriteLine($"Delta:    {diff.DeltaCount}");
+
+        if (diff.OwnerDeltas.Any())
+        {
+            Console.WriteLine("\nOwner deltas:");
+            foreach (var ownerDelta in diff.OwnerDeltas.Take(15))
+            {
+                Console.WriteLine($"  {string.Join(" > ", ownerDelta.OwnerPath)}: {ownerDelta.BaselineCount} -> {ownerDelta.CurrentCount} ({ownerDelta.DeltaCount:+#;-#;0})");
+            }
+        }
+
+        if (diff.NewSignatures.Any())
+        {
+            Console.WriteLine("\nNew signatures:");
+            foreach (var item in diff.NewSignatures.Take(15))
+            {
+                Console.WriteLine($"  {item.OwnerId} | {item.ProcessName}: +{item.DeltaCount}");
+            }
+        }
+
+        if (diff.RemovedSignatures.Any())
+        {
+            Console.WriteLine("\nRemoved signatures:");
+            foreach (var item in diff.RemovedSignatures.Take(15))
+            {
+                Console.WriteLine($"  {item.OwnerId} | {item.ProcessName}: {item.DeltaCount}");
             }
         }
     }

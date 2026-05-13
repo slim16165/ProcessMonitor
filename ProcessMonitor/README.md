@@ -10,6 +10,7 @@ Monitoraggio avanzato di processi bloccati e operazioni lente su Windows con int
 - **Integrazione Strumenti Esterni**: Supporto per WhatIsHang, UIHang, Process Explorer e Procmon
 - **Process Tree Investigation**: Ricostruisce parent, child, provenance logica, owner e tag dei processi Windows
 - **Remediation Planning**: Propone kill order prudente leaf-first per processi console/Git sospetti
+- **Snapshot Annotati**: Salva fotografie del sistema processi e confronta baseline e stato degradato
 
 ## Requisiti
 
@@ -56,6 +57,8 @@ dotnet run
 - `j` - Inspect process tree JSON
 - `m` - Remediation dry-run
 - `k` - Remediation apply
+- `n` - Salva snapshot processi
+- `v` - Diff tra snapshot
 
 ### Ownership E Tag
 
@@ -65,6 +68,20 @@ Il tool distingue tra:
 - **Tag piatti**: ad esempio `git`, `git-network`, `blocked`, `tcp-active`, `leaf`, `owner-inherited`
 
 Questo consente di raggruppare processi per owner logico e, separatamente, filtrare per comportamento o rischio.
+
+### Snapshot E Diff
+
+Puoi salvare snapshot annotati del sistema e confrontarli in seguito, ad esempio:
+
+- baseline subito dopo il boot
+- snapshot dopo aver aperto Windsurf o Cursor
+- snapshot durante una situazione degradata
+
+Il diff evidenzia:
+
+- crescita o riduzione per owner
+- nuove firme di processo
+- firme di processo scomparse
 
 ## Strumenti Esterni Supportati
 
@@ -85,6 +102,7 @@ Questo consente di raggruppare processi per owner logico e, separatamente, filtr
 - `OwnerResolver`: Classificazione owner gerarchica
 - `TagEnricher`: Tag comportamentali non gerarchici
 - `RemediationPlanner`: Piano di remediation prudente
+- `ProcessSnapshotArchiveService`: Persistenza snapshot e diff tra stati del sistema
 
 ## Licenza
 
