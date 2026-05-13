@@ -18,7 +18,7 @@ public class ProcessSnapshotService
     public List<ProcessTreeNode> CaptureSnapshot()
     {
         var tcpActivity = GetTcpOwningProcesses();
-        var cpuByPid = GetCpuByPid();
+        var perfByPid = GetPerfByPid();
         var runtimeProcesses = Process.GetProcesses().ToDictionary(p => p.Id);
         var nodes = new List<ProcessTreeNode>();
 
@@ -35,13 +35,15 @@ public class ProcessSnapshotService
                 var commandLine = obj["CommandLine"]?.ToString() ?? string.Empty;
                 var processName = obj["Name"]?.ToString() ?? process?.ProcessName ?? string.Empty;
                 var analysis = _commandAnalyzer.AnalyzeCommand(commandLine);
-                var cpuUsage = cpuByPid.TryGetValue(pid, out var cpu) ? cpu : 0;
+                var perfSample = perfByPid.TryGetValue(pid, out var perf) ? perf : ProcessPerfSample.Empty;
+                var cpuUsage = perfSample.CpuUsage;
                 var workingSetBytes = obj["WorkingSetSize"] != null ? Convert.ToInt64(obj["WorkingSetSize"]) : process?.WorkingSet64 ?? 0;
                 var memoryMb = workingSetBytes / (1024.0 * 1024.0);
                 var startTime = TryGetStartTime(process, obj["CreationDate"]?.ToString());
                 var parentPid = obj["ParentProcessId"] != null ? Convert.ToInt32(obj["ParentProcessId"]) : 0;
                 var isResponding = process?.Responding ?? true;
                 var threadCount = process?.Threads.Count ?? 0;
+                var handleCount = process?.HandleCount ?? 0;
 
                 nodes.Add(new ProcessTreeNode
                 {
@@ -58,8 +60,9 @@ public class ProcessSnapshotService
                     MemoryMB = memoryMb,
                     IsResponding = isResponding,
                     ThreadCount = threadCount,
-                    ReadBytesPerSecond = 0,
-                    WriteBytesPerSecond = 0,
+                    HandleCount = handleCount,
+                    ReadBytesPerSecond = perfSample.ReadBytesPerSecond,
+                    WriteBytesPerSecond = perfSample.WriteBytesPerSecond,
                     HasTcpActivity = tcpActivity.Contains(pid),
                     CommandAnalysis = analysis,
                     Status = DetermineStatus(isResponding, cpuUsage, memoryMb, analysis.RiskLevel),
@@ -84,22 +87,26 @@ public class ProcessSnapshotService
         return nodes;
     }
 
-    private static Dictionary<int, double> GetCpuByPid()
+    private static Dictionary<int, ProcessPerfSample> GetPerfByPid()
     {
-        var result = new Dictionary<int, double>();
+        var result = new Dictionary<int, ProcessPerfSample>();
 
         try
         {
             using var cpuSearcher = new ManagementObjectSearcher(
-                "SELECT IDProcess, PercentProcessorTime FROM Win32_PerfFormattedData_PerfProc_Process");
+                "SELECT IDProcess, PercentProcessorTime, IOReadBytesPersec, IOWriteBytesPersec FROM Win32_PerfFormattedData_PerfProc_Process");
 
             foreach (ManagementObject obj in cpuSearcher.Get())
             {
                 try
                 {
                     var pid = Convert.ToInt32(obj["IDProcess"]);
-                    var cpu = Convert.ToDouble(obj["PercentProcessorTime"]) / Environment.ProcessorCount;
-                    result[pid] = cpu;
+                    result[pid] = new ProcessPerfSample
+                    {
+                        CpuUsage = Convert.ToDouble(obj["PercentProcessorTime"]) / Environment.ProcessorCount,
+                        ReadBytesPerSecond = obj["IOReadBytesPersec"] != null ? Convert.ToInt64(obj["IOReadBytesPersec"]) : 0,
+                        WriteBytesPerSecond = obj["IOWriteBytesPersec"] != null ? Convert.ToInt64(obj["IOWriteBytesPersec"]) : 0
+                    };
                 }
                 catch
                 {
@@ -207,5 +214,14 @@ public class ProcessSnapshotService
         if (riskLevel >= RiskLevel.High)
             return ProcessStatus.Suspicious;
         return ProcessStatus.Normal;
+    }
+
+    private sealed class ProcessPerfSample
+    {
+        public static ProcessPerfSample Empty { get; } = new();
+
+        public double CpuUsage { get; init; }
+        public long ReadBytesPerSecond { get; init; }
+        public long WriteBytesPerSecond { get; init; }
     }
 }

@@ -32,12 +32,45 @@ public class RemediationPlanner
             .ToList();
 
         var reasons = new List<string>();
+        var actions = new List<SuggestedAction>();
         if (killOrder.Any())
+        {
             reasons.Add("Leaf-first su processi senza attività TCP e con segnali console/git/agent");
+            actions.Add(new SuggestedAction
+            {
+                Type = "kill-leaf",
+                Severity = "medium",
+                Confidence = "medium",
+                Summary = "Colpisci prima i leaf console/git senza rete attiva",
+                Detail = "Il kill order è già ordinato per minimizzare effetti collaterali.",
+                ProcessIds = killOrder.ToList()
+            });
+        }
         if (holdOpen.Any())
+        {
             reasons.Add("Sono stati preservati processi con rete attiva o classificati come root IDE");
+            actions.Add(new SuggestedAction
+            {
+                Type = "observe",
+                Severity = "medium",
+                Confidence = "high",
+                Summary = "Non toccare i root IDE o i processi con TCP attivo",
+                Detail = "Questi PID restano in hold-open finché non c'è evidenza più forte.",
+                ProcessIds = holdOpen.ToList()
+            });
+        }
         if (!killOrder.Any())
+        {
             reasons.Add("Nessun candidato abbastanza sicuro da killare automaticamente");
+            actions.Add(new SuggestedAction
+            {
+                Type = "recheck",
+                Severity = "low",
+                Confidence = "medium",
+                Summary = "Raccogli più evidenze prima di intervenire",
+                Detail = "Usa inspect, why-slow o uno snapshot live per chiarire il rischio."
+            });
+        }
 
         return new RemediationPlan
         {
@@ -45,9 +78,12 @@ public class RemediationPlanner
             Summary = killOrder.Any()
                 ? $"Proposti {killOrder.Count} processi in kill order prudente"
                 : "Solo ispezione, nessun kill automatico suggerito",
+            Severity = killOrder.Any() ? "medium" : "low",
+            Confidence = holdOpen.Any() ? "high" : "medium",
             KillOrder = killOrder,
             HoldOpen = holdOpen,
-            Reasons = reasons
+            Reasons = reasons,
+            SuggestedActions = actions
         };
     }
 

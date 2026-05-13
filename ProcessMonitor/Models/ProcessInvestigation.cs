@@ -24,9 +24,12 @@ public class RemediationPlan
 {
     public bool SafeToKill { get; set; }
     public string Summary { get; set; } = string.Empty;
+    public string Severity { get; set; } = "medium";
+    public string Confidence { get; set; } = "medium";
     public List<int> KillOrder { get; set; } = new();
     public List<string> Reasons { get; set; } = new();
     public List<int> HoldOpen { get; set; } = new();
+    public List<SuggestedAction> SuggestedActions { get; set; } = new();
 }
 
 public class OwnerSummary

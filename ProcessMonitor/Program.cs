@@ -51,11 +51,14 @@ class Program
         var processSnapshotService = new ProcessSnapshotService(monitorConfig, commandAnalyzer);
         var ownerResolver = new OwnerResolver();
         var tagEnricher = new TagEnricher();
+        var systemHealthService = new SystemHealthService(processSnapshotService, ownerResolver, tagEnricher);
+        var slowdownAnalyzer = new SlowdownAnalyzerService(processSnapshotService, ownerResolver, tagEnricher, systemHealthService);
+        var slowdownPlanner = new SlowdownPlannerService();
         var processTreeResolver = new ProcessTreeResolver(processSnapshotService, ownerResolver, tagEnricher);
-        var processSnapshotArchive = new ProcessSnapshotArchiveService(processSnapshotService, ownerResolver, tagEnricher);
+        var processSnapshotArchive = new ProcessSnapshotArchiveService(processSnapshotService, ownerResolver, tagEnricher, systemHealthService);
         var remediationPlanner = new RemediationPlanner();
 
-        if (await TryRunAgentCommand(args, processTreeResolver, remediationPlanner, processSnapshotArchive))
+        if (await TryRunAgentCommand(args, processTreeResolver, remediationPlanner, processSnapshotArchive, systemHealthService, slowdownAnalyzer, slowdownPlanner))
         {
             return;
         }
@@ -76,6 +79,9 @@ class Program
         _logger.LogInformation("  'd' - Dettagli processo Git (richiede PID)");
         _logger.LogInformation("  'z' - Gestione sessioni console zombie");
         _logger.LogInformation("  'g' - Apri Resource Monitor");
+        _logger.LogInformation("  'h' - Health/triage live");
+        _logger.LogInformation("  'y' - Why slow / root cause");
+        _logger.LogInformation("  'f' - Focus/filter live");
         _logger.LogInformation("  'i' - Inspect process tree (richiede PID)");
         _logger.LogInformation("  'j' - Inspect process tree JSON (richiede PID)");
         _logger.LogInformation("  'm' - Remediation dry-run (richiede PID)");
@@ -223,6 +229,18 @@ class Program
                 else if (key.KeyChar == 'g' || key.KeyChar == 'G')
                 {
                     OpenResourceMonitor(externalTools);
+                }
+                else if (key.KeyChar == 'h' || key.KeyChar == 'H')
+                {
+                    ShowSystemHealth(systemHealthService, asJson: false);
+                }
+                else if (key.KeyChar == 'y' || key.KeyChar == 'Y')
+                {
+                    ShowSlowdownDiagnosis(slowdownAnalyzer, slowdownPlanner, asJson: false);
+                }
+                else if (key.KeyChar == 'f' || key.KeyChar == 'F')
+                {
+                    ShowFocusView(slowdownAnalyzer);
                 }
                 else if (key.KeyChar == 'i' || key.KeyChar == 'I')
                 {
@@ -1012,7 +1030,10 @@ class Program
         string[] args,
         ProcessTreeResolver resolver,
         RemediationPlanner planner,
-        ProcessSnapshotArchiveService snapshotArchive)
+        ProcessSnapshotArchiveService snapshotArchive,
+        SystemHealthService healthService,
+        SlowdownAnalyzerService slowdownAnalyzer,
+        SlowdownPlannerService slowdownPlanner)
     {
         if (args.Length == 0)
         {
@@ -1055,6 +1076,71 @@ class Program
                 return true;
             }
 
+            if (command == "snapshot-diff-current" && args.Length >= 2)
+            {
+                var diff = snapshotArchive.DiffSnapshotAgainstCurrent(args[1]);
+                PrintSnapshotDiff(diff);
+                return true;
+            }
+
+            if (command == "snapshot-diff-health" && args.Length >= 3)
+            {
+                var delta = snapshotArchive.DiffSnapshotHealth(args[1], args[2]);
+                PrintHealthDelta(delta);
+                return true;
+            }
+
+            if (command == "health")
+            {
+                PrintSystemHealth(healthService.CaptureHealthSnapshot());
+                return true;
+            }
+
+            if (command == "health-json")
+            {
+                Console.WriteLine(JsonSerializer.Serialize(healthService.CaptureHealthSnapshot(), new JsonSerializerOptions { WriteIndented = true }));
+                return true;
+            }
+
+            if (command == "why-slow")
+            {
+                var focus = args.Length >= 2 ? string.Join(' ', args.Skip(1)) : null;
+                var diagnosis = slowdownAnalyzer.Diagnose(focus);
+                PrintSlowdownDiagnosis(diagnosis, slowdownPlanner.BuildPlan(diagnosis));
+                return true;
+            }
+
+            if (command == "why-slow-json")
+            {
+                var focus = args.Length >= 2 ? string.Join(' ', args.Skip(1)) : null;
+                Console.WriteLine(JsonSerializer.Serialize(slowdownAnalyzer.Diagnose(focus), new JsonSerializerOptions { WriteIndented = true }));
+                return true;
+            }
+
+            if (command == "plan-slowdown")
+            {
+                var focus = args.Length >= 2 ? string.Join(' ', args.Skip(1)) : null;
+                var diagnosis = slowdownAnalyzer.Diagnose(focus);
+                PrintSlowdownPlan(slowdownPlanner.BuildPlan(diagnosis));
+                return true;
+            }
+
+            if (command == "plan-json")
+            {
+                var focus = args.Length >= 2 ? string.Join(' ', args.Skip(1)) : null;
+                var diagnosis = slowdownAnalyzer.Diagnose(focus);
+                Console.WriteLine(JsonSerializer.Serialize(slowdownPlanner.BuildPlan(diagnosis), new JsonSerializerOptions { WriteIndented = true }));
+                return true;
+            }
+
+            if (command == "focus" && args.Length >= 2)
+            {
+                var focus = string.Join(' ', args.Skip(1));
+                var diagnosis = slowdownAnalyzer.Diagnose(focus);
+                PrintFocusProcesses(focus, diagnosis.FocusProcesses);
+                return true;
+            }
+
             if (args.Length < 2 || !int.TryParse(args[1], out var pid))
             {
                 return false;
@@ -1077,6 +1163,9 @@ class Program
                 case "remediate-apply":
                     PrintRemediationPlan(investigation.RemediationPlan);
                     ApplyRemediationPlan(investigation.RemediationPlan);
+                    return true;
+                case "plan-tree":
+                    PrintRemediationPlan(investigation.RemediationPlan);
                     return true;
                 default:
                     return false;
@@ -1168,6 +1257,7 @@ class Program
     {
         Console.WriteLine("=== Remediation Plan ===");
         Console.WriteLine(plan.Summary);
+        Console.WriteLine($"Severity: {plan.Severity} | Confidence: {plan.Confidence}");
 
         foreach (var reason in plan.Reasons)
         {
@@ -1182,6 +1272,15 @@ class Program
         if (plan.HoldOpen.Any())
         {
             Console.WriteLine($"Hold open: {string.Join(", ", plan.HoldOpen)}");
+        }
+
+        if (plan.SuggestedActions.Any())
+        {
+            Console.WriteLine("Suggested actions:");
+            foreach (var action in plan.SuggestedActions.Take(10))
+            {
+                Console.WriteLine($"  [{action.Type}] {action.Summary} ({action.Severity}/{action.Confidence})");
+            }
         }
     }
 
@@ -1276,12 +1375,30 @@ class Program
         Console.WriteLine($"Current:  {diff.CurrentId} ({diff.CurrentCount})");
         Console.WriteLine($"Delta:    {diff.DeltaCount}");
 
+        if (diff.HealthDelta != null)
+        {
+            Console.WriteLine($"\nHealth: {diff.HealthDelta.BaselineBottleneck} -> {diff.HealthDelta.CurrentBottleneck}");
+            Console.WriteLine($"  CPU delta: {diff.HealthDelta.CpuDelta:+#;-#;0}%");
+            Console.WriteLine($"  Disk delta: {diff.HealthDelta.DiskDelta:+#;-#;0}%");
+            Console.WriteLine($"  Free memory delta: {diff.HealthDelta.MemoryAvailableDeltaMB:+#;-#;0} MB");
+            Console.WriteLine($"  Page reads delta: {diff.HealthDelta.PageReadsDelta:+#;-#;0}/s");
+        }
+
         if (diff.OwnerDeltas.Any())
         {
             Console.WriteLine("\nOwner deltas:");
             foreach (var ownerDelta in diff.OwnerDeltas.Take(15))
             {
                 Console.WriteLine($"  {string.Join(" > ", ownerDelta.OwnerPath)}: {ownerDelta.BaselineCount} -> {ownerDelta.CurrentCount} ({ownerDelta.DeltaCount:+#;-#;0})");
+            }
+        }
+
+        if (diff.TagDeltas.Any())
+        {
+            Console.WriteLine("\nTag deltas:");
+            foreach (var tagDelta in diff.TagDeltas.Take(12))
+            {
+                Console.WriteLine($"  {tagDelta.Tag}: {tagDelta.BaselineCount} -> {tagDelta.CurrentCount} ({tagDelta.DeltaCount:+#;-#;0})");
             }
         }
 
@@ -1302,5 +1419,160 @@ class Program
                 Console.WriteLine($"  {item.OwnerId} | {item.ProcessName}: {item.DeltaCount} [{item.SignatureDetail}]");
             }
         }
+    }
+
+    private static void ShowSystemHealth(SystemHealthService healthService, bool asJson)
+    {
+        var health = healthService.CaptureHealthSnapshot();
+        if (asJson)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(health, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        else
+        {
+            PrintSystemHealth(health);
+        }
+
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+    }
+
+    private static void PrintSystemHealth(SystemHealthSnapshot health)
+    {
+        Console.WriteLine("=== System Health ===");
+        Console.WriteLine($"Captured: {health.CapturedAt:yyyy-MM-dd HH:mm:ss}");
+        Console.WriteLine($"Uptime:   {health.MachineUptime:dd\\.hh\\:mm\\:ss}");
+        Console.WriteLine($"Pressure: {health.Pressure.PrimaryBottleneck}");
+        if (!string.IsNullOrWhiteSpace(health.Pressure.SecondaryBottleneck))
+        {
+            Console.WriteLine($"Secondary:{health.Pressure.SecondaryBottleneck}");
+        }
+        Console.WriteLine($"Summary:  {health.Pressure.Summary}");
+        Console.WriteLine();
+        Console.WriteLine($"CPU     total={health.TotalCpuPercent:F0}% user={health.UserCpuPercent:F0}% kernel={health.KernelCpuPercent:F0}% intr={health.InterruptCpuPercent:F0}% dpc={health.DpcCpuPercent:F0}%");
+        Console.WriteLine($"Disk    busy={health.DiskBusyPercent:F0}% queue={health.DiskQueueLength:F1} read={(health.DiskReadBytesPerSec / (1024 * 1024)):F1}MB/s write={(health.DiskWriteBytesPerSec / (1024 * 1024)):F1}MB/s");
+        Console.WriteLine($"Memory  avail={health.AvailableMemoryMB:F0}MB commit={health.CommittedMemoryMB:F0}/{health.CommitLimitMB:F0}MB pages={health.PagesPerSec:F0}/s pageReads={health.PageReadsPerSec:F0}/s pagefile={health.PageFileUsageMB:F0}/{health.PageFileAllocatedMB:F0}MB");
+
+        PrintTopProcesses("Top CPU", health.CpuTop, sample => $"{sample.CpuPercent,5:F1}%");
+        PrintTopProcesses("Top IO", health.IoTop, sample => $"{sample.ReadMBps + sample.WriteMBps,5:F2} MB/s");
+        PrintTopProcesses("Top MEM", health.MemoryTop, sample => $"{sample.MemoryMB,6:F0} MB");
+
+        if (health.Suspects.Any())
+        {
+            Console.WriteLine("\nSuspects:");
+            foreach (var suspect in health.Suspects.Take(10))
+            {
+                Console.WriteLine($"  {string.Join(" > ", suspect.OwnerPath),-28} cpu={suspect.CpuPercent,5:F1}% io={suspect.ReadMBps + suspect.WriteMBps,6:F2}MB/s mem={suspect.MemoryMB,7:F0}MB [{suspect.DominantReason}]");
+            }
+        }
+    }
+
+    private static void PrintTopProcesses(string title, IEnumerable<TopProcessSample> samples, Func<TopProcessSample, string> metricSelector)
+    {
+        Console.WriteLine($"\n{title}:");
+        foreach (var sample in samples.Take(8))
+        {
+            Console.WriteLine($"  {sample.ProcessName,-24} PID={sample.ProcessId,-7} {metricSelector(sample),12} owner={string.Join(" > ", sample.OwnerPath),-24} reason={sample.Reason}");
+        }
+    }
+
+    private static void ShowSlowdownDiagnosis(SlowdownAnalyzerService analyzer, SlowdownPlannerService planner, bool asJson)
+    {
+        var diagnosis = analyzer.Diagnose();
+        var slowdownPlan = planner.BuildPlan(diagnosis);
+
+        if (asJson)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(diagnosis, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        else
+        {
+            PrintSlowdownDiagnosis(diagnosis, slowdownPlan);
+        }
+
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+    }
+
+    private static void PrintSlowdownDiagnosis(SlowdownDiagnosis diagnosis, SlowdownPlan slowdownPlan)
+    {
+        Console.WriteLine("=== Why Slow ===");
+        Console.WriteLine(diagnosis.Summary);
+        Console.WriteLine();
+        PrintSystemHealth(diagnosis.Health);
+
+        if (diagnosis.Reasons.Any())
+        {
+            Console.WriteLine("\nReason codes:");
+            foreach (var reason in diagnosis.Reasons.Take(8))
+            {
+                Console.WriteLine($"  {reason.Code} ({reason.Severity}/{reason.Confidence})");
+                Console.WriteLine($"    {reason.Summary}");
+                foreach (var evidence in reason.Evidence.Take(3))
+                {
+                    Console.WriteLine($"    - {evidence}");
+                }
+                if (!string.IsNullOrWhiteSpace(reason.SuggestedNextAction))
+                {
+                    Console.WriteLine($"    next: {reason.SuggestedNextAction}");
+                }
+            }
+        }
+
+        Console.WriteLine();
+        PrintSlowdownPlan(slowdownPlan);
+    }
+
+    private static void PrintSlowdownPlan(SlowdownPlan plan)
+    {
+        Console.WriteLine("=== Slowdown Plan ===");
+        Console.WriteLine(plan.Summary);
+        Console.WriteLine($"Severity: {plan.Severity} | Confidence: {plan.Confidence}");
+        foreach (var reason in plan.Reasons.Take(10))
+        {
+            Console.WriteLine($"  - {reason}");
+        }
+
+        if (plan.Actions.Any())
+        {
+            Console.WriteLine("Actions:");
+            foreach (var action in plan.Actions.Take(10))
+            {
+                Console.WriteLine($"  [{action.Type}] {action.Summary} ({action.Severity}/{action.Confidence})");
+                if (!string.IsNullOrWhiteSpace(action.Detail))
+                {
+                    Console.WriteLine($"    {action.Detail}");
+                }
+            }
+        }
+    }
+
+    private static void ShowFocusView(SlowdownAnalyzerService analyzer)
+    {
+        Console.Write("\nFiltro focus (owner:Windsurf, tag:git, pressure:disk, kind:Security, top cpu): ");
+        var focus = Console.ReadLine();
+        var diagnosis = analyzer.Diagnose(focus);
+        PrintFocusProcesses(string.IsNullOrWhiteSpace(focus) ? "top cpu" : focus, diagnosis.FocusProcesses);
+        Console.WriteLine("\nPremi un tasto per continuare...");
+        Console.ReadKey();
+    }
+
+    private static void PrintFocusProcesses(string focus, IEnumerable<TopProcessSample> samples)
+    {
+        Console.WriteLine($"=== Focus: {focus} ===");
+        foreach (var sample in samples.Take(20))
+        {
+            Console.WriteLine($"  PID={sample.ProcessId,-7} {sample.ProcessName,-24} cpu={sample.CpuPercent,5:F1}% io={sample.ReadMBps + sample.WriteMBps,6:F2}MB/s mem={sample.MemoryMB,7:F0}MB owner={string.Join(" > ", sample.OwnerPath)} reason={sample.Reason}");
+        }
+    }
+
+    private static void PrintHealthDelta(HealthSnapshotDelta delta)
+    {
+        Console.WriteLine("=== Snapshot Health Delta ===");
+        Console.WriteLine($"Bottleneck: {delta.BaselineBottleneck} -> {delta.CurrentBottleneck}");
+        Console.WriteLine($"CPU delta: {delta.CpuDelta:+#;-#;0}%");
+        Console.WriteLine($"Disk delta: {delta.DiskDelta:+#;-#;0}%");
+        Console.WriteLine($"Free memory delta: {delta.MemoryAvailableDeltaMB:+#;-#;0} MB");
+        Console.WriteLine($"Page reads delta: {delta.PageReadsDelta:+#;-#;0}/s");
     }
 }

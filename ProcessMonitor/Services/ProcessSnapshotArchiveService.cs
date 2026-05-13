@@ -15,17 +15,20 @@ public class ProcessSnapshotArchiveService
     private readonly ProcessSnapshotService _snapshotService;
     private readonly OwnerResolver _ownerResolver;
     private readonly TagEnricher _tagEnricher;
+    private readonly SystemHealthService _healthService;
     private readonly string _snapshotDirectory;
 
     public ProcessSnapshotArchiveService(
         ProcessSnapshotService snapshotService,
         OwnerResolver ownerResolver,
         TagEnricher tagEnricher,
+        SystemHealthService healthService,
         string? snapshotDirectory = null)
     {
         _snapshotService = snapshotService;
         _ownerResolver = ownerResolver;
         _tagEnricher = tagEnricher;
+        _healthService = healthService;
         _snapshotDirectory = snapshotDirectory ?? Path.Combine(Directory.GetCurrentDirectory(), "snapshots");
     }
 
@@ -76,6 +79,12 @@ public class ProcessSnapshotArchiveService
         return DiffSnapshotAgainstCurrent(latestSnapshotId, currentNote);
     }
 
+    public HealthSnapshotDelta DiffSnapshotHealth(string baselineId, string currentId)
+    {
+        var diff = DiffSnapshots(baselineId, currentId);
+        return diff.HealthDelta ?? new HealthSnapshotDelta();
+    }
+
     public string? GetLatestSnapshotId()
     {
         return ListSnapshots().FirstOrDefault();
@@ -101,6 +110,20 @@ public class ProcessSnapshotArchiveService
             })
             .Where(delta => delta.DeltaCount != 0)
             .OrderByDescending(delta => Math.Abs(delta.DeltaCount))
+            .ToList();
+
+        var baselineTags = baseline.Processes.SelectMany(p => p.Tags).GroupBy(tag => tag).ToDictionary(g => g.Key, g => g.Count());
+        var currentTags = current.Processes.SelectMany(p => p.Tags).GroupBy(tag => tag).ToDictionary(g => g.Key, g => g.Count());
+        var tagDeltas = baselineTags.Keys.Union(currentTags.Keys)
+            .Select(tag => new TagDelta
+            {
+                Tag = tag,
+                BaselineCount = baselineTags.TryGetValue(tag, out var baselineCount) ? baselineCount : 0,
+                CurrentCount = currentTags.TryGetValue(tag, out var currentCount) ? currentCount : 0
+            })
+            .Where(delta => delta.DeltaCount != 0)
+            .OrderByDescending(delta => Math.Abs(delta.DeltaCount))
+            .Take(20)
             .ToList();
 
         var baselineSignatures = BuildSignatureMap(baseline.Processes);
@@ -149,8 +172,10 @@ public class ProcessSnapshotArchiveService
             BaselineCount = baseline.Processes.Count,
             CurrentCount = current.Processes.Count,
             OwnerDeltas = ownerDeltas,
+            TagDeltas = tagDeltas,
             NewSignatures = newSignatures.OrderByDescending(x => x.DeltaCount).Take(25).ToList(),
-            RemovedSignatures = removedSignatures.OrderBy(x => x.DeltaCount).Take(25).ToList()
+            RemovedSignatures = removedSignatures.OrderBy(x => x.DeltaCount).Take(25).ToList(),
+            HealthDelta = BuildHealthDelta(baseline.Health, current.Health)
         };
     }
 
@@ -165,6 +190,7 @@ public class ProcessSnapshotArchiveService
             SnapshotId = DateTime.Now.ToString("yyyyMMdd-HHmmss"),
             Note = note,
             CapturedAt = DateTime.Now,
+            Health = _healthService.CaptureHealthSnapshot(processes),
             Processes = processes.Select(p => new ProcessSnapshotEntry
             {
                 ProcessId = p.ProcessId,
@@ -176,6 +202,9 @@ public class ProcessSnapshotArchiveService
                 Tags = p.Tags.ToList(),
                 CpuUsage = p.CpuUsage,
                 MemoryMB = p.MemoryMB,
+                HandleCount = p.HandleCount,
+                ReadBytesPerSecond = p.ReadBytesPerSecond,
+                WriteBytesPerSecond = p.WriteBytesPerSecond,
                 HasTcpActivity = p.HasTcpActivity,
                 StartTime = p.StartTime
             }).ToList()
@@ -379,5 +408,21 @@ public class ProcessSnapshotArchiveService
         public required ProcessSnapshotEntry Process { get; init; }
         public required string SignatureDetail { get; init; }
         public required int Count { get; init; }
+    }
+
+    private static HealthSnapshotDelta? BuildHealthDelta(SystemHealthSnapshot? baseline, SystemHealthSnapshot? current)
+    {
+        if (baseline == null || current == null)
+            return null;
+
+        return new HealthSnapshotDelta
+        {
+            BaselineBottleneck = baseline.Pressure.PrimaryBottleneck,
+            CurrentBottleneck = current.Pressure.PrimaryBottleneck,
+            CpuDelta = Math.Round(current.TotalCpuPercent - baseline.TotalCpuPercent, 1),
+            DiskDelta = Math.Round(current.DiskBusyPercent - baseline.DiskBusyPercent, 1),
+            MemoryAvailableDeltaMB = Math.Round(current.AvailableMemoryMB - baseline.AvailableMemoryMB, 1),
+            PageReadsDelta = Math.Round(current.PageReadsPerSec - baseline.PageReadsPerSec, 1)
+        };
     }
 }

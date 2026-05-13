@@ -133,6 +133,7 @@ public class ProcessTreeResolver
             MemoryMB = node.MemoryMB,
             IsResponding = node.IsResponding,
             ThreadCount = node.ThreadCount,
+            HandleCount = node.HandleCount,
             ReadBytesPerSecond = node.ReadBytesPerSecond,
             WriteBytesPerSecond = node.WriteBytesPerSecond,
             HasTcpActivity = node.HasTcpActivity,

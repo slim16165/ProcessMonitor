@@ -38,6 +38,12 @@ public class OwnerResolver
 
     private static ProcessTreeNode ResolveLogicalOwner(ProcessTreeNode node, Dictionary<int, ProcessTreeNode> byPid)
     {
+        if (ProcessMonitorClassifier.HasIntrinsicOwnerClassification(node.ProcessName, node.CommandLine) &&
+            !ProcessMonitorClassifier.IsInheritableWrapper(node.ProcessName, node.CommandLine))
+        {
+            return node;
+        }
+
         var current = node;
         var visited = new HashSet<int>();
 
@@ -48,6 +54,13 @@ public class OwnerResolver
 
             if (ProcessMonitorClassifier.IsOwnerAnchor(current.ProcessName, current.CommandLine))
                 return current;
+
+            if (current.ProcessId != node.ProcessId &&
+                ProcessMonitorClassifier.HasIntrinsicOwnerClassification(current.ProcessName, current.CommandLine) &&
+                !ProcessMonitorClassifier.IsInheritableWrapper(current.ProcessName, current.CommandLine))
+            {
+                return current;
+            }
 
             if (!current.ParentProcessId.HasValue || !byPid.TryGetValue(current.ParentProcessId.Value, out var parent))
                 return current;

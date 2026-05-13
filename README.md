@@ -9,6 +9,8 @@ Monitoraggio avanzato di processi bloccati e operazioni lente su Windows con int
 - **Analisi Directory**: Identifica directory problematiche che potrebbero causare lentezza
 - **Integrazione Strumenti Esterni**: Supporto per WhatIsHang, UIHang, Process Explorer e Procmon
 - **Process Tree Investigation**: Ricostruisce parent, child, provenance logica, owner e tag dei processi Windows
+- **Live Triage Cockpit**: Mostra CPU, disco, memoria/paging, top processi e owner sospetti in pochi secondi
+- **Root Cause Analyzer**: Produce diagnosi `why-slow` con reason code, evidenze e next action
 - **Remediation Planning**: Propone kill order prudente leaf-first per processi console/Git sospetti
 - **Snapshot Annotati**: Salva fotografie del sistema processi e confronta baseline e stato degradato
 
@@ -53,6 +55,9 @@ dotnet run
 - `e` - Apri Process Explorer (richiede PID)
 - `p` - Apri Procmon
 - `t` - Lista strumenti disponibili
+- `h` - Health/triage live
+- `y` - Why slow / root cause
+- `f` - Focus/filter live
 - `i` - Inspect process tree
 - `j` - Inspect process tree JSON
 - `m` - Remediation dry-run
@@ -66,6 +71,15 @@ Comandi non interattivi per agenti:
 - `snapshot-list`
 - `snapshot-diff <baselineId> <currentId>`
 - `snapshot-diff-latest [nota-current]`
+- `snapshot-diff-current <baselineId>`
+- `snapshot-diff-health <baselineId> <currentId>`
+- `health`
+- `health-json`
+- `why-slow [focus]`
+- `why-slow-json [focus]`
+- `plan-slowdown [focus]`
+- `plan-json [focus]`
+- `focus <owner|tag|kind|pressure>`
 
 ### Ownership E Tag
 
@@ -87,8 +101,10 @@ Puoi salvare snapshot annotati del sistema e confrontarli in seguito, ad esempio
 Il diff evidenzia:
 
 - crescita o riduzione per owner
+- crescita o riduzione per tag
 - nuove firme di processo normalizzate
 - firme di processo scomparse
+- delta di bottleneck e pressione sistema
 
 La normalizzazione delle firme riduce il rumore dei processi ripetitivi, soprattutto per `git.exe`, shell wrapper e tool CLI che cambiano solo per PID, hash o path temporanei.
 
@@ -107,6 +123,9 @@ La normalizzazione delle firme riduce il rumore dei processi ripetitivi, sopratt
 - `PerformanceCollector`: Raccolta metriche CPU, memoria e I/O
 - `ExternalToolsService`: Integrazione strumenti esterni
 - `ProcessSnapshotService`: Snapshot centralizzato dei processi Windows
+- `SystemHealthService`: Raccolta salute sistema, top CPU/I/O/RAM e pressure assessment
+- `SlowdownAnalyzerService`: Diagnosi `why-slow` con reason code e focus/filter
+- `SlowdownPlannerService`: Piano di decision support per rallentamenti generali
 - `ProcessTreeResolver`: Risoluzione dell'albero di processo
 - `OwnerResolver`: Classificazione owner gerarchica
 - `TagEnricher`: Tag comportamentali non gerarchici

@@ -11,20 +11,38 @@ public class TagEnricher
             var tags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var lower = $"{node.ProcessName} {node.CommandLine}".ToLowerInvariant();
 
-            if (lower.Contains("git"))
+            if (ProcessMonitorClassifier.IsGitRelatedProcess(node.ProcessName, node.CommandLine))
                 tags.Add("git");
-            if (lower.Contains("git fetch") || lower.Contains("git pull") || lower.Contains("git-remote-https"))
+            if (ProcessMonitorClassifier.IsGitNetworkProcess(node.ProcessName, node.CommandLine))
                 tags.Add("git-network");
-            if (lower.Contains("powershell") || lower.Contains("pwsh"))
+            if (ProcessMonitorClassifier.IsPowerShellProcess(node.ProcessName, node.CommandLine))
                 tags.Add("powershell");
             if (lower.Contains("cursor"))
                 tags.Add("cursor");
             if (lower.Contains("windsurf"))
                 tags.Add("windsurf");
+            if (lower.Contains("antigravity"))
+                tags.Add("antigravity");
             if (lower.Contains("code"))
                 tags.Add("vscode-family");
             if (lower.Contains("conhost") || lower.Contains("openconsole") || lower.Contains("windowsterminal"))
                 tags.Add("console-host");
+            if (ProcessMonitorClassifier.IsBrowser(lower))
+                tags.Add("browser");
+            if (ProcessMonitorClassifier.IsSecurityTool(lower))
+                tags.Add("security");
+            if (ProcessMonitorClassifier.IsTuningTool(lower))
+                tags.Add("tuning");
+            if (ProcessMonitorClassifier.IsIndexer(lower))
+                tags.Add("indexer");
+            if (lower.Contains("tgitcache"))
+                tags.Add("git-cache");
+            if (ProcessMonitorClassifier.IsLanguageServer(lower))
+                tags.Add("language-server");
+            if (node.LaunchCategory == "Service")
+                tags.Add("service");
+            if (ProcessMonitorClassifier.IsDiagnosticNoise(node.ProcessName, node.CommandLine))
+                tags.Add("diagnostics-noise");
             if (!node.IsResponding)
                 tags.Add("blocked");
             if (node.HasTcpActivity)

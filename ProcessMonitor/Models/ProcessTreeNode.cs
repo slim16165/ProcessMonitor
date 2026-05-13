@@ -21,6 +21,7 @@ public class ProcessTreeNode
     public double MemoryMB { get; set; }
     public bool IsResponding { get; set; }
     public int ThreadCount { get; set; }
+    public int HandleCount { get; set; }
     public long ReadBytesPerSecond { get; set; }
     public long WriteBytesPerSecond { get; set; }
     public bool HasTcpActivity { get; set; }
