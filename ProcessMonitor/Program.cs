@@ -31,6 +31,10 @@ class Program
         var monitorConfig = new ProcessMonitorConfig();
         configuration.GetSection("ProcessMonitor").Bind(monitorConfig);
 
+        // Inizializza classificatore processi Windows (PRIMA dei servizi)
+        var jsonPath = Path.Combine(Directory.GetCurrentDirectory(), "windows_system_processes.json");
+        ProcessMonitorClassifier.Initialize(jsonPath);
+
         var notificationConfig = new NotificationConfig();
         configuration.GetSection("Notifications").Bind(notificationConfig);
 
@@ -1099,6 +1103,140 @@ class Program
             if (command == "health-json")
             {
                 Console.WriteLine(JsonSerializer.Serialize(healthService.CaptureHealthSnapshot(), new JsonSerializerOptions { WriteIndented = true }));
+                return true;
+            }
+
+            if (command == "export-json")
+            {
+                try
+                {
+                    var snapshot = healthService.CaptureHealthSnapshot();
+                    var outputPath = args.Length >= 2 ? args[1] : $"system_health_{DateTime.Now:yyyyMMdd_HHmmss}.json";
+                    ReportExporter.ExportToJson(snapshot, outputPath);
+                    Console.WriteLine($"Exported system health to {outputPath}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error exporting to JSON: {ex.Message}");
+                }
+                return true;
+            }
+
+            if (command == "export-csv")
+            {
+                try
+                {
+                    var snapshot = healthService.CaptureHealthSnapshot();
+                    var outputPath = args.Length >= 2 ? args[1] : $"system_health_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+                    ReportExporter.ExportToCsv(snapshot.CpuTop, outputPath);
+                    Console.WriteLine($"Exported top CPU processes to {outputPath}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error exporting to CSV: {ex.Message}");
+                }
+                return true;
+            }
+
+            if (command == "threshold-baseline")
+            {
+                var baseline = DynamicThresholdService.CalculateBaseline();
+                Console.WriteLine($"Baseline based on {baseline.SampleCount} snapshots:");
+                Console.WriteLine($"  CPU: {baseline.CpuMean:F1}% ± {baseline.CpuStdDev:F1}% (min: {baseline.CpuMin:F1}%, max: {baseline.CpuMax:F1}%)");
+                Console.WriteLine($"  Disk: {baseline.DiskMean:F1}% ± {baseline.DiskStdDev:F1}% (min: {baseline.DiskMin:F1}%, max: {baseline.DiskMax:F1}%)");
+                Console.WriteLine($"  Memory: {baseline.MemoryMean:F1}MB ± {baseline.MemoryStdDev:F1}MB (min: {baseline.MemoryMin:F1}MB, max: {baseline.MemoryMax:F1}MB)");
+                return true;
+            }
+
+            if (command == "threshold-check")
+            {
+                var snapshot = healthService.CaptureHealthSnapshot();
+                DynamicThresholdService.AddSnapshot(snapshot);
+                var anomalies = DynamicThresholdService.DetectAnomalies(snapshot);
+                
+                if (anomalies.Count == 0)
+                {
+                    Console.WriteLine("No anomalies detected.");
+                }
+                else
+                {
+                    Console.WriteLine($"Detected {anomalies.Count} anomalies:");
+                    foreach (var anomaly in anomalies)
+                    {
+                        Console.WriteLine($"  [{anomaly.Type.ToUpper()}] {anomaly.Severity.ToUpper()}: Current={anomaly.CurrentValue:F1}, Baseline={anomaly.BaselineMean:F1}±{anomaly.BaselineStdDev:F1}, Deviation={anomaly.Deviation:F1}σ");
+                    }
+                }
+                return true;
+            }
+
+            if (command == "threshold-add")
+            {
+                var snapshot = healthService.CaptureHealthSnapshot();
+                DynamicThresholdService.AddSnapshot(snapshot);
+                Console.WriteLine($"Added snapshot to history. Total snapshots: {DynamicThresholdService.CalculateBaseline().SampleCount}");
+                return true;
+            }
+
+            if (command == "git-map")
+            {
+                if (args.Length < 3)
+                {
+                    Console.WriteLine("Usage: git-map <processId> <repositoryPath> [branch]");
+                    return true;
+                }
+                
+                if (!int.TryParse(args[1], out var processId))
+                {
+                    Console.WriteLine("Invalid process ID");
+                    return true;
+                }
+
+                var repoPath = args[2];
+                var branch = args.Length >= 4 ? args[3] : "main";
+                
+                GitRepositoryMapper.AddMapping(processId, repoPath, branch);
+                Console.WriteLine($"Mapped process {processId} to repository {repoPath} (branch: {branch})");
+                return true;
+            }
+
+            if (command == "git-show")
+            {
+                if (args.Length >= 2 && int.TryParse(args[1], out var processId))
+                {
+                    var repos = GitRepositoryMapper.GetRepositoriesForProcess(processId);
+                    Console.WriteLine($"Repositories for process {processId}:");
+                    if (repos.Count == 0)
+                    {
+                        Console.WriteLine("  None");
+                    }
+                    else
+                    {
+                        foreach (var repo in repos)
+                        {
+                            Console.WriteLine($"  - {repo.Path} (branch: {repo.Branch}, last seen: {repo.LastSeen:yyyy-MM-dd HH:mm})");
+                        }
+                    }
+                }
+                else
+                {
+                    var allMappings = GitRepositoryMapper.GetAllMappings();
+                    Console.WriteLine($"All Git mappings ({allMappings.Count} processes):");
+                    foreach (var kvp in allMappings)
+                    {
+                        Console.WriteLine($"  Process {kvp.Key}:");
+                        foreach (var repo in kvp.Value)
+                        {
+                            Console.WriteLine($"    - {repo.Path} (branch: {repo.Branch})");
+                        }
+                    }
+                }
+                return true;
+            }
+
+            if (command == "git-clear")
+            {
+                GitRepositoryMapper.ClearMappings();
+                Console.WriteLine("Cleared all Git repository mappings");
                 return true;
             }
 

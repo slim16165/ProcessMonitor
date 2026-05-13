@@ -216,7 +216,16 @@ public class SystemHealthService
     private static SystemCounters GetSystemPerformance()
     {
         var result = new SystemCounters();
+        CollectCpuCounters(result);
+        CollectInterruptCounters(result);
+        CollectDiskCounters(result);
+        CollectMemoryCounters(result);
+        CollectPageFileCounters(result);
+        return result;
+    }
 
+    private static void CollectCpuCounters(SystemCounters result)
+    {
         try
         {
             using var cpuSearcher = new ManagementObjectSearcher(
@@ -224,9 +233,7 @@ public class SystemHealthService
             foreach (ManagementObject obj in cpuSearcher.Get())
             {
                 if (!string.Equals(obj["Name"]?.ToString(), "_Total", StringComparison.OrdinalIgnoreCase))
-                {
                     continue;
-                }
 
                 result.TotalCpuPercent = ReadDouble(obj, "PercentProcessorTime");
                 result.UserCpuPercent = ReadDouble(obj, "PercentUserTime");
@@ -239,7 +246,10 @@ public class SystemHealthService
         catch
         {
         }
+    }
 
+    private static void CollectInterruptCounters(SystemCounters result)
+    {
         try
         {
             using var interruptSearcher = new ManagementObjectSearcher(
@@ -249,9 +259,7 @@ public class SystemHealthService
                 var name = obj["Name"]?.ToString();
                 if (!string.Equals(name, "_Total", StringComparison.OrdinalIgnoreCase) &&
                     !string.Equals(name, "0,_Total", StringComparison.OrdinalIgnoreCase))
-                {
                     continue;
-                }
 
                 result.InterruptCpuPercent = ReadDouble(obj, "PercentInterruptTime");
                 result.DpcCpuPercent = ReadDouble(obj, "PercentDPCTime");
@@ -261,7 +269,10 @@ public class SystemHealthService
         catch
         {
         }
+    }
 
+    private static void CollectDiskCounters(SystemCounters result)
+    {
         try
         {
             using var diskSearcher = new ManagementObjectSearcher(
@@ -282,7 +293,10 @@ public class SystemHealthService
         catch
         {
         }
+    }
 
+    private static void CollectMemoryCounters(SystemCounters result)
+    {
         try
         {
             using var memorySearcher = new ManagementObjectSearcher(
@@ -300,7 +314,10 @@ public class SystemHealthService
         catch
         {
         }
+    }
 
+    private static void CollectPageFileCounters(SystemCounters result)
+    {
         try
         {
             using var pageSearcher = new ManagementObjectSearcher(
@@ -315,8 +332,6 @@ public class SystemHealthService
         catch
         {
         }
-
-        return result;
     }
 
     private static double ReadDouble(ManagementObject obj, string propertyName)

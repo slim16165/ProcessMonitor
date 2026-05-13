@@ -1,0 +1,11 @@
+# Generated data files
+threshold_history.json
+git_repositories.json
+system_health_*.json
+test*.json
+test*.csv
+
+# IDE files
+.vs/
+*.user
+*.suo

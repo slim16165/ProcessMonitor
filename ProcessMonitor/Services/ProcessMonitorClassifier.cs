@@ -6,6 +6,7 @@ public static class ProcessMonitorClassifier
     private static readonly string[] PowerShellProcessNames = ["powershell", "powershell.exe", "pwsh", "pwsh.exe"];
     private static readonly string[] NodeProcessNames = ["node", "node.exe", "nodejs", "nodejs.exe"];
     private static readonly string[] PythonProcessNames = ["python", "python.exe", "pythonw", "pythonw.exe"];
+    private static WindowsSystemProcessClassifier? _windowsClassifier;
 
     private static readonly string[] ConsoleTargets =
     [
@@ -16,6 +17,19 @@ public static class ProcessMonitorClassifier
         "cursor", "windsurf", "code", "devenv", "antigravity"
     ];
 
+    public static void Initialize(string jsonPath)
+    {
+        _windowsClassifier = new WindowsSystemProcessClassifier(jsonPath);
+    }
+
+    public static bool IsWindowsSystemProcess(string processName)
+    {
+        if (_windowsClassifier == null)
+            return false;
+        
+        return _windowsClassifier.IsWindowsSystemProcess(processName);
+    }
+
     public static bool IsConsoleLike(string processName, string commandLine)
     {
         var lower = $"{processName} {commandLine}".ToLowerInvariant();
@@ -25,6 +39,9 @@ public static class ProcessMonitorClassifier
     public static string CategorizeLaunch(string processName, string commandLine)
     {
         var lower = $"{processName} {commandLine}".ToLowerInvariant();
+        
+        if (IsWindowsSystemProcess(processName))
+            return "System";
         if (IsSecurityTool(lower))
             return "Security";
         if (IsTuningTool(lower))
@@ -70,6 +87,13 @@ public static class ProcessMonitorClassifier
     public static List<string> BuildOwnerPath(string processName, string commandLine)
     {
         var lower = $"{processName} {commandLine}".ToLowerInvariant();
+
+        if (IsWindowsSystemProcess(processName))
+        {
+            var category = _windowsClassifier?.GetSystemCategory(processName);
+            if (!string.IsNullOrEmpty(category))
+                return category.Split('/').ToList();
+        }
 
         if (lower.Contains("devenv") || lower.Contains("visual studio"))
             return ["IDE", "VisualStudio"];

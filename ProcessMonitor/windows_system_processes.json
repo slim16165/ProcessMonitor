@@ -1,0 +1,99 @@
+{
+  "system_processes": [
+    {
+      "name": "explorer.exe",
+      "category": "System/Shell",
+      "description": "Windows shell and file manager"
+    },
+    {
+      "name": "svchost.exe",
+      "category": "System/ServiceHost",
+      "description": "Service Host for Windows services"
+    },
+    {
+      "name": "dwm.exe",
+      "category": "System/WindowManager",
+      "description": "Desktop Window Manager"
+    },
+    {
+      "name": "SearchIndexer.exe",
+      "category": "System/Indexing",
+      "description": "Windows Search Indexer"
+    },
+    {
+      "name": "WmiPrvSE.exe",
+      "category": "System/Diagnostics",
+      "description": "WMI Provider Host"
+    },
+    {
+      "name": "System",
+      "category": "System/Kernel",
+      "description": "Windows kernel process"
+    },
+    {
+      "name": "System Idle Process",
+      "category": "System/Idle",
+      "description": "Idle process showing available CPU"
+    },
+    {
+      "name": "csrss.exe",
+      "category": "System/Session",
+      "description": "Client/Server Runtime Subsystem"
+    },
+    {
+      "name": "wininit.exe",
+      "category": "System/Init",
+      "description": "Windows Start-up Application"
+    },
+    {
+      "name": "lsass.exe",
+      "category": "System/Security",
+      "description": "Local Security Authority"
+    },
+    {
+      "name": "services.exe",
+      "category": "System/Services",
+      "description": "Service Control Manager"
+    },
+    {
+      "name": "winlogon.exe",
+      "category": "System/Auth",
+      "description": "Windows Logon Application"
+    },
+    {
+      "name": "smss.exe",
+      "category": "System/Session",
+      "description": "Session Manager Subsystem"
+    },
+    {
+      "name": "spoolsv.exe",
+      "category": "System/Print",
+      "description": "Print Spooler Service"
+    },
+    {
+      "name": "audiodg.exe",
+      "category": "System/Audio",
+      "description": "Windows Audio Device Graph Isolation"
+    },
+    {
+      "name": "fontdrvhost.exe",
+      "category": "System/Font",
+      "description": "Windows Font Driver Host"
+    },
+    {
+      "name": "dllhost.exe",
+      "category": "System/COM",
+      "description": "COM Surrogate"
+    },
+    {
+      "name": "conhost.exe",
+      "category": "System/Console",
+      "description": "Console Window Host"
+    },
+    {
+      "name": "rundll32.exe",
+      "category": "System/Utility",
+      "description": "Run DLL utility"
+    }
+  ]
+}
